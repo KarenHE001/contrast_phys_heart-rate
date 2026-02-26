@@ -1,0 +1,15 @@
+{
+  "K": 4,
+  "S": 2,
+  "T": 300,
+  "delta_t": 150,
+  "fs": 30,
+  "in_ch": 3,
+  "label_ratio": 0,
+  "lr": 1e-05,
+  "result_dir": "./results/default",
+  "seed": 132374216,
+  "test_mode": false,
+  "total_epoch": 30,
+  "train_exp_name": "default"
+}

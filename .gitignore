@@ -172,6 +172,13 @@ process_*.txt
 *.pth
 *.ckpt
 *.h5
+# 预训练权重例外
+!contrast-phys+/pretrained/*.pt
+!contrast-phys+/pretrained/*.json
+!contrast-phys+/pretrained/unsupervised/
+!contrast-phys+/pretrained/unsupervised/*
+!contrast-phys+/pretrained/supervised/
+!contrast-phys+/pretrained/supervised/*
 
 # 压缩包
 live_test_package.tar.gz
