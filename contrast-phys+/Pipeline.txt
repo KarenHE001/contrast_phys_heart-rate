@@ -1,0 +1,225 @@
+好问题！让我详细梳理整个 pipeline，并对比 paper 和 GitHub 原始实现。
+
+[4 tools called]
+
+非常好的问题！让我详细梳理整个 pipeline，并对比 paper/GitHub 原始实现。
+
+---
+
+## 📋 完整 Pipeline 梳理
+
+### **Step 1: 视频输入 → 模型推理**
+
+```python
+输入: 视频帧 [T, H, W, C]  
+      T = 300 帧（10秒 @ 30fps）
+      H = W = 128 (预处理后的人脸尺寸)
+      C = 3 (RGB)
+
+预处理: [T, H, W, C] -> [1, C, T, H, W]  # 转换为模型输入格式
+
+模型: PhysNet(x)
+      ↓
+输出: ST-rPPG block [1, 5, T]
+      5 = S*S+1，其中 S=2（空间维度）
+      - 前 4 个通道: 4 个空间位置的 rPPG 信号
+      - 第 5 个通道: 空间平均后的 rPPG 信号（这是我们要用的）
+```
+
+**代码位置**: `PhysNetModel.py` 第 104-112 行
+```python
+x = self.end(x)  # (B, 1, T, S, S), ST-rPPG block
+x_list = []
+for a in range(self.S):
+    for b in range(self.S):
+        x_list.append(x[:,:,:,a,b])  # 4个空间位置
+x = sum(x_list)/(self.S*self.S)  # 空间平均
+X = torch.cat(x_list+[x], 1)  # [B, 5, T]
+```
+
+---
+
+### **Step 2: 提取 rPPG 信号（Waveform）**
+
+```python
+模型输出: [1, 5, T]
+
+提取最后一个通道（空间平均信号）:
+rppg_raw = output[:, -1, :]  # shape: [T]
+         = output[:, 4, :]    # 第5个通道（索引4）
+```
+
+**这就是 "waveform"** - 原始 rPPG 信号，长度 T=300。
+
+**代码位置**: `live_predict_webcam.py` 第 308 行
+```python
+rppg = output[:, -1, :]  # 提取最后一个时间步的 rPPG
+```
+
+---
+
+### **Step 3: 带通滤波**
+
+```python
+输入: rppg_raw [T]
+
+Butterworth 带通滤波 (0.6-4 Hz = 36-240 BPM):
+rppg_filtered = butter_bandpass(rppg_raw, lowcut=0.6, highcut=4, fs=30)
+               ↓
+输出: rppg_filtered [T]  # 滤波后的 rPPG 信号
+```
+
+**目的**: 去除心率范围外的噪声（保留 36-240 BPM 的生理信号）。
+
+---
+
+### **Step 4: FFT 转换 → 频谱**
+
+```python
+输入: rppg_filtered [T]
+
+Step 4.1: 加 Hann 窗（减少频谱泄露）
+sig_windowed = rppg_filtered * hann_window(T)
+
+Step 4.2: FFT 变换
+sig_f = np.abs(fft(sig_windowed))  # FFT 幅度谱，不是 PSD！
+       ↓
+输出: sig_f [T]  # 频域表示（单边谱，只用前一半）
+```
+
+**关键区别**：
+- **GitHub 原始代码用的是 FFT 幅度谱** (`np.abs(fft(sig))`)
+- **不是 PSD**（PSD = `|FFT|^2`）
+- **SNR_get 函数用的是 PSD** (`np.abs(fft(sig))**2`)，但 HR 估计用的是幅度谱
+
+**代码位置**: `utils_sig.py` 第 34-46 行
+```python
+def hr_fft(sig, fs, harmonics_removal=True):
+    # get heart rate by FFT
+    # return both heart rate and PSD  ← 注释有误，实际返回的是幅度谱
+    
+    sig = sig.reshape(-1)
+    sig = sig * signal.windows.hann(sig.shape[0])
+    sig_f = np.abs(fft(sig))  # ← FFT 幅度谱，不是 PSD
+```
+
+---
+
+### **Step 5: 峰值检测 → 心率**
+
+```python
+输入: sig_f [T]  # FFT 幅度谱
+
+Step 5.1: 频率掩码（只保留 [0.6, 4] Hz）
+sig_f[0:low_idx] = 0
+sig_f[high_idx:] = 0
+
+Step 5.2: 找频谱峰值
+peak_idx = find_peaks(sig_f)  # 找所有峰值
+sort_idx = argsort(sig_f[peak_idx])[::-1]  # 按功率降序排序
+
+Step 5.3: 取 Top-2 峰值
+peak_idx1 = peak_idx[sort_idx[0]]  # 最大峰值
+peak_idx2 = peak_idx[sort_idx[1]]  # 第二大峰值
+
+Step 5.4: 转换为心率 (BPM)
+f_hr1 = peak_idx1 / T * fs  # 频率 (Hz)
+hr1 = f_hr1 * 60            # 心率 (BPM)
+
+Step 5.5: 谐波去除（可选）
+if harmonics_removal:
+    if |hr1 - 2*hr2| < 10:  # hr1 是 hr2 的二倍谐波
+        hr = hr2             # 选择基频
+    else:
+        hr = hr1             # 否则选最大峰值
+else:
+    hr = hr1
+```
+
+---
+
+## 🔍 与 Paper/GitHub 对比
+
+### **1. FFT vs PSD**
+
+| 项目 | GitHub 原始代码 | Paper 通常说法 |
+|------|----------------|--------------|
+| **HR 估计** | FFT 幅度谱 (`np.abs(fft)`) | "FFT" 或 "frequency-domain analysis" |
+| **SNR 计算** | PSD (`np.abs(fft)**2`) | PSD (Power Spectral Density) |
+| **注释** | "return PSD" ❌ 不准确 | - |
+
+**结论**: GitHub 代码用的是 **FFT 幅度谱**，注释说 PSD 是错的。
+
+---
+
+### **2. 谐波去除逻辑**
+
+```python
+if np.abs(hr1 - 2*hr2) < 10:  # 如果 hr1 ≈ 2*hr2
+    hr = hr2  # 选择 hr2（认为 hr1 是谐波）
+else:
+    hr = hr1  # 否则选 hr1
+```
+
+**问题**: 
+- 这个逻辑太简单，容易误判
+- 你的 60s 测试就误判了：108 BPM（Top-1）和 60 BPM（Top-2）被认为是谐波关系，选了 60 BPM，但真实 HR 是 90 BPM
+
+---
+
+### **3. 我们的改进（Parabolic Interpolation）**
+
+```python
+# 原始 hr_fft: 只用 FFT bin 的整数索引
+hr = peak_idx / T * fs * 60
+
+# hr_fft_parabolic: 抛物线插值，得到小数索引
+peak_idx_refined = peak_idx + delta  # delta 是插值修正
+hr = peak_idx_refined / T * fs * 60
+```
+
+**优势**: 打破 FFT 量化网格（从 2 BPM 分辨率 → 0.1 BPM）。
+
+---
+
+## 📊 完整数据流总结
+
+```
+视频帧 [T=300, H=128, W=128, C=3]
+   ↓ (预处理)
+[1, C=3, T=300, H=128, W=128]
+   ↓ (PhysNet 模型)
+ST-rPPG block [1, 5, T=300]
+   ↓ (取第5个通道)
+rPPG_raw [300]  ← 这是 "waveform"（原始）
+   ↓ (Butterworth 带通滤波 0.6-4 Hz)
+rPPG_filtered [300]  ← 这是滤波后的 waveform
+   ↓ (加 Hann 窗)
+rPPG_windowed [300]
+   ↓ (FFT)
+FFT_magnitude [300]  ← FFT 幅度谱（不是 PSD）
+   ↓ (频率掩码 + 峰值检测)
+peak_idx1, peak_idx2
+   ↓ (转换 + 谐波去除)
+HR (BPM)  ← 最终心率估计
+```
+
+---
+
+## ✅ 回答你的问题
+
+1. **用的是 FFT 还是 PSD？**  
+   → **FFT 幅度谱** (`np.abs(fft)`)，不是 PSD (`|fft|^2`)
+
+2. **Waveform 是哪一步输出的？**  
+   → **Step 2** 的 `rppg_raw [T]` 是原始 waveform  
+   → **Step 3** 的 `rppg_filtered [T]` 是滤波后 waveform
+
+3. **如何转换成心率？**  
+   → FFT → 频谱峰值检测 → 频率转 BPM → 谐波去除
+
+4. **是否按 paper 说的？**  
+   → 基本一致，但 paper 通常只说"FFT-based HR estimation"，不会详细说是幅度谱还是 PSD  
+   → **注释误导**：代码注释说 PSD，实际是幅度谱
+
+你现在清楚整个流程了吗？
