@@ -1,0 +1,478 @@
+# -*- coding: utf-8 -*-
+"""
+自录/离线视频推理 — 与 test_epn 一致的非重叠窗口；可选与 session 目录下 BVP/时间戳对齐做 UBFC 同款评估。
+
+GT: 与视频同目录的 BVP.csv + frames_timestamp.csv（列0帧号/列1时间戳，与 live_predict_webcam_EPN.load_gt_hr_from_bvp_csv 一致）。
+
+输出: results/EfficientPhysNet/label_ratio_0/live_runs/<时间戳>/
+  - inference_by_scale.json
+  - eval_vs_gt.json          (有 GT 时)
+  - summary.txt
+  - pred_<t10|t30|t60>s_<name>.npy  # 与 evaluate.py 兼容，可再跑 evaluate 复核
+
+用法 (在 contrast-phys+ 下):
+  python EfficientPhysNet/live_recorded_infer.py --video .../video.avi --landmarks ...csv
+"""
+import argparse
+import json
+import os
+import sys
+import time
+
+_EPN = os.path.dirname(os.path.abspath(__file__))
+_CP = os.path.dirname(_EPN)
+_PRETRAINED = os.path.join(_CP, "pretrained", "EfficientPhysNet")
+_EPN2D = os.path.join(_CP, "PhysNet 2D")
+sys.path.insert(0, _CP)
+sys.path.insert(0, _EPN2D)
+
+import numpy as np
+import pandas as pd
+import torch
+from scipy.interpolate import interp1d
+from scipy.stats import pearsonr
+
+from EfficientPhysNet import EfficientPhysNet
+from utils_inference import dl_model
+from utils_paths import format_label_ratio
+from utils_sig import (
+    butter_bandpass,
+    compute_fft_peaks,
+    hr_fft_parabolic,
+    select_hr_from_peaks,
+)
+
+import live_predict_webcam_EPN as live_epn
+
+_USE_HARMONICS = True
+
+
+def _safe_pearson(x, y):
+    x = np.asarray(x).reshape(-1)
+    y = np.asarray(y).reshape(-1)
+    n = min(len(x), len(y))
+    if n < 5:
+        return np.nan
+    x, y = x[:n], y[:n]
+    if np.std(x) < 1e-12 or np.std(y) < 1e-12:
+        return np.nan
+    try:
+        r, _ = pearsonr(x, y)
+        return r
+    except Exception:
+        return np.nan
+
+
+def _compute_norm_psd(sig, fs_hz, high_pass_bpm=40, low_pass_bpm=250):
+    sig = np.asarray(sig).reshape(-1).astype(np.float64)
+    sig = sig - np.mean(sig)
+    n = len(sig)
+    if n < 10:
+        return None, None
+    x = np.fft.rfft(sig, norm="forward")
+    psd = x.real**2 + x.imag**2
+    freqs_hz = np.fft.rfftfreq(n, 1.0 / fs_hz)
+    low_hz, high_hz = high_pass_bpm / 60.0, low_pass_bpm / 60.0
+    mask = (freqs_hz >= low_hz) & (freqs_hz <= high_hz)
+    psd_band = psd[mask]
+    s = np.sum(psd_band)
+    if s < 1e-12:
+        return None, None
+    return freqs_hz[mask] * 60.0, psd_band / s
+
+
+def _psd_metrics(rppg_f, bvp_f, fs_hz):
+    _, pr = _compute_norm_psd(rppg_f, fs_hz)
+    _, pb = _compute_norm_psd(bvp_f, fs_hz)
+    if pr is None or pb is None:
+        return np.nan, np.nan
+    n = min(len(pr), len(pb))
+    if n < 5:
+        return np.nan, np.nan
+    pr, pb = pr[:n], pb[:n]
+    return _safe_pearson(pr, pb), float(np.mean((pr - pb) ** 2))
+
+
+def _estimate_hr(rppg_f, fs):
+    hr_raw, _, _ = hr_fft_parabolic(
+        rppg_f, fs=fs, harmonics_removal=_USE_HARMONICS
+    )
+    peaks = compute_fft_peaks(rppg_f, fs)
+    hr_sel, _ = select_hr_from_peaks(
+        peaks, fs, len(rppg_f), use_harmonics_removal=_USE_HARMONICS
+    )
+    return float(hr_sel if hr_sel is not None else hr_raw)
+
+
+def _try_load_session_gt(session_dir):
+    """BVP.csv + frames_timestamp.csv，与 live_epn.load_gt_hr_from_bvp_csv 列约定一致。"""
+    bvp_path = os.path.join(session_dir, "BVP.csv")
+    ts_path = os.path.join(session_dir, "frames_timestamp.csv")
+    if not (os.path.isfile(bvp_path) and os.path.isfile(ts_path)):
+        return None
+    bvp_df = pd.read_csv(bvp_path)
+    ts_df = pd.read_csv(ts_path)
+    t_bvp = bvp_df.iloc[:, 0].values.astype(float)
+    bvp_raw = bvp_df.iloc[:, 1].values.astype(float)
+    frame_col = ts_df.columns[0]
+    ts_col = ts_df.columns[1]
+    frame_ids = ts_df[frame_col].values.astype(np.int64)
+    ts_wall = ts_df[ts_col].values.astype(float)
+    mx = int(frame_ids.max()) + 1
+    ts_lut = np.full(mx, np.nan, dtype=np.float64)
+    for fid, tw in zip(frame_ids, ts_wall):
+        if 0 <= fid < mx:
+            ts_lut[fid] = tw
+
+    # ── Auto-detect and correct clock offset ────────────────────────
+    # If camera timestamps fall outside the BVP time range, the camera
+    # uses a different system clock (e.g. Android vs PC).  Shift camera
+    # timestamps into the BVP domain so interp_bvp returns real data.
+    clock_offset = 0.0
+    valid_ts = ts_lut[~np.isnan(ts_lut)]
+    if len(valid_ts) > 1 and len(t_bvp) > 1:
+        cam_start, cam_end = float(valid_ts[0]), float(valid_ts[-1])
+        bvp_start, bvp_end = float(t_bvp[0]), float(t_bvp[-1])
+        overlap = max(0.0, min(cam_end, bvp_end) - max(cam_start, bvp_start))
+        cam_dur = cam_end - cam_start
+        if cam_dur > 0 and overlap < cam_dur * 0.5:
+            clock_offset = cam_start - bvp_start
+            ts_lut = ts_lut - clock_offset
+            print(f"  [GT-align] clock offset {clock_offset:.1f}s detected, shifted to BVP domain")
+
+    interp_bvp = interp1d(
+        t_bvp,
+        bvp_raw,
+        kind="linear",
+        bounds_error=False,
+        fill_value="extrapolate",
+    )
+    return {"interp_bvp": interp_bvp, "ts_lut": ts_lut, "clock_offset": clock_offset}
+
+
+def _clip_time_axis(gt_pack, frame_nums_slice, fs):
+    ts_lut = gt_pack["ts_lut"]
+    t_sel = []
+    for fn in frame_nums_slice:
+        fn = int(fn)
+        if 0 <= fn < len(ts_lut) and not np.isnan(ts_lut[fn]):
+            t_sel.append(float(ts_lut[fn]))
+        else:
+            t_sel.append(float(fn) / float(fs))
+    return np.asarray(t_sel, dtype=np.float64)
+
+
+def _bvp_clip(gt_pack, frame_nums_slice, fs, return_time_axis=False):
+    """frame_nums_slice: ? clip ??????????"""
+    interp_bvp = gt_pack["interp_bvp"]
+    t_sel = _clip_time_axis(gt_pack, frame_nums_slice, fs)
+    bvp = interp_bvp(t_sel).astype(np.float32)
+    if return_time_axis:
+        return bvp, t_sel
+    return bvp
+
+
+def _run_scale(model, device, frames, frame_nums, fs, sec, gt_pack=None):
+    ti = int(sec * fs)
+    n = len(frames) // ti
+    out = []
+    for b in range(n):
+        sl = slice(b * ti, (b + 1) * ti)
+        chunk = frames[sl]
+        fns = frame_nums[sl]
+        rppg = dl_model(model, np.asarray(chunk), device)
+        rf = butter_bandpass(rppg, lowcut=0.6, highcut=4, fs=fs)
+        hr_pred = _estimate_hr(rf, fs)
+        entry = {
+            "clip_idx": b + 1,
+            "t_start_s": b * sec,
+            "t_end_s": (b + 1) * sec,
+            "hr_pred_bpm": hr_pred,
+            "n_frames": int(ti),
+            "frame_num_start": int(fns[0]) if len(fns) else None,
+            "frame_num_end": int(fns[-1]) if len(fns) else None,
+        }
+        if gt_pack is not None:
+            try:
+                bvp_gt, t_sel = _bvp_clip(gt_pack, fns, fs, return_time_axis=True)
+                bf = butter_bandpass(bvp_gt, lowcut=0.6, highcut=4, fs=fs)
+                hr_gt = _estimate_hr(bf, fs)
+                psd_c, psd_m = _psd_metrics(rf, bf, fs)
+                err = abs(hr_pred - hr_gt)
+                entry["hr_gt_bpm"] = float(hr_gt)
+                entry["hr_err_bpm"] = float(err)
+                entry["psd_corr"] = float(psd_c) if psd_c == psd_c else None
+                entry["psd_mse"] = float(psd_m) if psd_m == psd_m else None
+                if len(t_sel):
+                    entry["time_start_wall"] = float(t_sel[0])
+                    if len(t_sel) > 1:
+                        dt = float(np.median(np.diff(t_sel)))
+                    else:
+                        dt = 1.0 / float(fs)
+                    dt = dt if dt > 0 else 1.0 / float(fs)
+                    entry["time_end_wall"] = float(t_sel[-1] + dt)
+                    entry["time_span_wall_s"] = float(entry["time_end_wall"] - entry["time_start_wall"])
+            except Exception as ex:
+                entry["gt_error"] = str(ex)
+        out.append(entry)
+    return out
+
+
+def _save_pred_npy(run_dir, name_stem, rppg_list, bvp_list, meta_extra):
+    """0-d object .npy，与 evaluate.py / test_epn 的 load 方式一致。"""
+    results = {
+        "rppg_list": np.asarray(rppg_list, dtype=object),
+        "bvp_list": np.asarray(bvp_list, dtype=object),
+    }
+    box = np.empty((), dtype=object)
+    box[()] = results
+    path = os.path.join(run_dir, f"{name_stem}.npy")
+    np.save(path, box, allow_pickle=True)
+    with open(os.path.join(run_dir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta_extra, f, ensure_ascii=False, indent=2)
+    return path
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--video", required=True, help="视频路径 (.avi/.mp4)")
+    ap.add_argument("--landmarks", default=None, help="OpenFace 2D landmarks CSV")
+    ap.add_argument(
+        "--openface-dir",
+        default=os.path.join(_CP, "OpenFace"),
+        help="未提供 landmarks 时自动运行 FeatureExtraction",
+    )
+    ap.add_argument(
+        "--strategy",
+        default="curriculum",
+        help="pretrained/EfficientPhysNet/<strategy>/",
+    )
+    ap.add_argument(
+        "--scales",
+        default="10",
+        help="秒，逗号分隔。例: 10 或 10,30,60",
+    )
+    ap.add_argument("--label-ratio", type=float, default=0.0)
+    ap.add_argument(
+        "--output-root",
+        default=None,
+        help="默认 results/EfficientPhysNet/label_ratio_X（其下 live_runs/）",
+    )
+    ap.add_argument(
+        "--session-dir",
+        default=None,
+        help="含 BVP.csv / frames_timestamp.csv 的目录；默认取视频所在目录",
+    )
+    ap.add_argument(
+        "--skip-eval-npy",
+        action="store_true",
+        help="不写出供 evaluate.py 使用的 pred_*.npy",
+    )
+    args = ap.parse_args()
+
+    video_path = os.path.abspath(args.video)
+    if not os.path.isfile(video_path):
+        raise FileNotFoundError(video_path)
+
+    session_dir = os.path.abspath(args.session_dir or os.path.dirname(video_path))
+    gt_pack = _try_load_session_gt(session_dir)
+    pretrained_dir = os.path.join(_PRETRAINED, args.strategy)
+    config_path = os.path.join(pretrained_dir, "config.json")
+    weight_path = os.path.join(pretrained_dir, "best_model.pt")
+    if not os.path.isfile(config_path):
+        raise FileNotFoundError(config_path)
+    if not os.path.isfile(weight_path):
+        raise FileNotFoundError(weight_path)
+
+    with open(config_path) as f:
+        config = json.load(f)
+    fs = int(config.get("fs", 30))
+    input_size = int(config.get("input_size", 96))
+    S = config.get("S", 2)
+    in_ch = config.get("in_ch", 3)
+
+    if gt_pack is not None:
+        gt_pack["fs"] = fs
+
+    scales = [int(x.strip()) for x in args.scales.split(",") if x.strip()]
+    if not scales or any(s <= 0 for s in scales):
+        raise ValueError("--scales 须为正整数秒，如 10 或 10,30,60")
+
+    lr_tag = format_label_ratio(args.label_ratio)
+    if args.output_root:
+        base_live = os.path.join(args.output_root, "live_runs")
+    else:
+        base_live = os.path.join(
+            _CP, "results", "EfficientPhysNet", lr_tag, "live_runs"
+        )
+    run_dir = os.path.join(base_live, time.strftime("%Y-%m-%d_%H-%M-%S"))
+    os.makedirs(run_dir, exist_ok=True)
+
+    landmark_path = args.landmarks
+    if not landmark_path and os.path.isdir(args.openface_dir):
+        lm_dir = os.path.join(run_dir, "landmarks")
+        landmark_path = live_epn.run_openface(video_path, lm_dir, args.openface_dir)
+        print(f"OpenFace -> {landmark_path}")
+    if not landmark_path or not os.path.isfile(landmark_path):
+        raise FileNotFoundError(
+            "需要 --landmarks 或有效的 --openface-dir 以生成 landmarks"
+        )
+
+    frames, ts, frame_nums = live_epn.load_frames_from_video_with_openface(
+        video_path, landmark_path, store_size=input_size
+    )
+    print(
+        f"加载帧: {len(frames)} @ store_size={input_size}, fs(config)={fs}, "
+        f"GT={'yes' if gt_pack else 'no'}"
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = EfficientPhysNet(S, in_ch=in_ch, input_size=input_size).to(device).eval()
+    model.load_state_dict(torch.load(weight_path, map_location=device))
+
+    results_by_scale = {}
+    eval_vs_gt = {}
+
+    for sec in scales:
+        ti = sec * fs
+        if len(frames) < ti:
+            print(f"  [t{sec}s] 跳过: 帧数 {len(frames)} < {ti}")
+            results_by_scale[f"t{sec}s"] = {"clips": [], "error": "insufficient_frames"}
+            continue
+        clips = _run_scale(
+            model, device, frames, frame_nums, fs, sec, gt_pack=gt_pack
+        )
+        results_by_scale[f"t{sec}s"] = {
+            "time_interval_sec": sec,
+            "n_clips": len(clips),
+            "clips": clips,
+        }
+        print(f"  [t{sec}s] clips={len(clips)}")
+        if gt_pack and clips:
+            errs = [c.get("hr_err_bpm") for c in clips if c.get("hr_err_bpm") is not None]
+            psds = [c.get("psd_corr") for c in clips if c.get("psd_corr") is not None]
+            eval_vs_gt[f"t{sec}s"] = {
+                "n": len(errs),
+                "mae_bpm": float(np.mean(errs)) if errs else None,
+                "rmse_bpm": float(np.sqrt(np.mean(np.array(errs) ** 2))) if errs else None,
+                "psd_corr_mean": float(np.nanmean(psds)) if psds else None,
+            }
+
+    meta = {
+        "video": video_path,
+        "session_dir": session_dir,
+        "landmarks": os.path.abspath(landmark_path),
+        "pretrained_dir": pretrained_dir,
+        "weight": weight_path,
+        "strategy": args.strategy,
+        "input_size": input_size,
+        "fs": fs,
+        "scales_sec": scales,
+        "device": str(device),
+        "n_frames_loaded": int(len(frames)),
+        "has_gt": bool(gt_pack),
+        "gt_note": "BVP.csv + frames_timestamp.csv in session_dir; HR/PSD 与 EfficientPhysNet/evaluate.py 一致",
+    }
+    with open(os.path.join(run_dir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    with open(os.path.join(run_dir, "inference_by_scale.json"), "w", encoding="utf-8") as f:
+        json.dump(results_by_scale, f, ensure_ascii=False, indent=2, default=str)
+
+    if eval_vs_gt:
+        with open(os.path.join(run_dir, "eval_vs_gt.json"), "w", encoding="utf-8") as f:
+            json.dump(eval_vs_gt, f, ensure_ascii=False, indent=2, default=str)
+
+    # pred_*.npy + meta 供 evaluate.py 二次核对（每个 scale 一份）
+    if not args.skip_eval_npy and gt_pack:
+        for sec in scales:
+            key = f"t{sec}s"
+            if key not in results_by_scale or not results_by_scale[key].get("clips"):
+                continue
+            ti = int(sec * fs)
+            n = len(frames) // ti
+            rppg_list, bvp_list = [], []
+            for b in range(n):
+                sl = slice(b * ti, (b + 1) * ti)
+                rppg_list.append(
+                    dl_model(model, np.asarray(frames[sl]), device).astype(np.float32)
+                )
+                bvp_list.append(_bvp_clip(gt_pack, frame_nums[sl], fs))
+            stem = f"pred_{key}_live"
+            meta_eval = {
+                "strategy": args.strategy,
+                "time_interval_sec": sec,
+                "fs": fs,
+                "input_size": input_size,
+                "label_ratio": float(args.label_ratio),
+                "run_id": 0,
+                "weight_path": weight_path,
+                "device": str(device),
+                "subjects_saved": 1,
+                "clips_total": int(n),
+                "source": "live_recorded_infer",
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            sub = os.path.join(run_dir, f"eval_bundle_{key}")
+            os.makedirs(sub, exist_ok=True)
+            _save_pred_npy(sub, "session", rppg_list, bvp_list, meta_eval)
+            print(f"  已写 evaluate 包: {sub}/session.npy + meta.json")
+
+    lines = [
+        "Live recorded inference + eval (UBFC-aligned metrics when GT present)",
+        "=" * 60,
+        f"video: {video_path}",
+        f"session_dir: {session_dir}",
+        f"strategy: {args.strategy} | input_size: {input_size} | fs: {fs}",
+        f"GT: {'BVP.csv + frames_timestamp.csv' if gt_pack else 'missing — only HR_pred'}",
+        "",
+    ]
+    primary = f"t{scales[0]}s"
+    if primary in results_by_scale and results_by_scale[primary].get("clips"):
+        cs = results_by_scale[primary]["clips"]
+        if gt_pack:
+            errs = [c["hr_err_bpm"] for c in cs if "hr_err_bpm" in c]
+            lines.append(
+                f"【主】{primary}: n_clips={len(cs)}, "
+                f"MAE={np.mean(errs):.2f} BPM, RMSE={np.sqrt(np.mean(np.square(errs))):.2f} BPM"
+                if errs
+                else f"【主】{primary}: n_clips={len(cs)}"
+            )
+            for c in cs:
+                extra = ""
+                if "hr_gt_bpm" in c:
+                    extra = f" gt={c['hr_gt_bpm']:.1f} err={c.get('hr_err_bpm', 0):.1f}"
+                    if c.get("psd_corr") is not None:
+                        extra += f" PSD_corr={c['psd_corr']:.4f}"
+                lines.append(
+                    f"  clip {c['clip_idx']}: pred={c['hr_pred_bpm']:.1f} BPM{extra}"
+                )
+        else:
+            hrs = [c["hr_pred_bpm"] for c in cs]
+            lines.append(
+                f"【主】{primary}: n_clips={len(cs)}, HR_pred mean={np.mean(hrs):.2f} BPM"
+            )
+            for c in cs:
+                lines.append(
+                    f"  clip {c['clip_idx']}: {c['t_start_s']:.0f}-{c['t_end_s']:.0f}s -> {c['hr_pred_bpm']:.1f} BPM"
+                )
+    for k, ev in eval_vs_gt.items():
+        if k == primary:
+            continue
+        lines.append(
+            f"【ablation】{k}: MAE={ev.get('mae_bpm')}, RMSE={ev.get('rmse_bpm')}, "
+            f"PSD_corr_mean={ev.get('psd_corr_mean')}"
+        )
+    lines.append("")
+    lines.append("JSON: inference_by_scale.json" + (", eval_vs_gt.json" if eval_vs_gt else ""))
+    if gt_pack and not args.skip_eval_npy:
+        lines.append("evaluate 复核: cd contrast-phys+ && python EfficientPhysNet/evaluation/evaluate.py <run_dir>/eval_bundle_t10s")
+    summary_txt = "\n".join(lines)
+    with open(os.path.join(run_dir, "summary.txt"), "w", encoding="utf-8") as f:
+        f.write(summary_txt)
+    print("\n" + summary_txt)
+    print(f"\n保存目录: {run_dir}")
+
+
+if __name__ == "__main__":
+    main()

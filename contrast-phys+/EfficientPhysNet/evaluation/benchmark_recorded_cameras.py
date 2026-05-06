@@ -1,0 +1,540 @@
+#!/usr/bin/env python3
+import argparse
+import csv
+import json
+import math
+import re
+import shutil
+import subprocess
+import sys
+import time
+from collections import defaultdict
+from pathlib import Path
+
+from common_gt_compare import build_common_gt_outputs
+
+CP = Path(__file__).resolve().parents[2]
+DEFAULT_DATA_ROOT = Path("/home/vt_ai_test1/KarenHE/contrast-phys/RPPG_data_benny_eric/Recorded_3 Cameras")
+DEFAULT_RESULTS_ROOT = CP / "results" / "EfficientPhysNet" / "label_ratio_0" / "camera_compare"
+RAW_CAMERA_STEM = "video_RAW_YUV420"
+ANDROID_VIDEO_RE = re.compile(r"^(android_[^_]+)_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}$")
+SESSION_RE = re.compile(r"^v\d+$", re.IGNORECASE)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Batch benchmark for recorded 3-camera sessions using "
+            "EfficientPhysNet live_recorded_infer + evaluate.py."
+        )
+    )
+    parser.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    parser.add_argument("--results-root", default=str(DEFAULT_RESULTS_ROOT))
+    parser.add_argument("--python-bin", default=sys.executable)
+    parser.add_argument("--strategy", default="curriculum")
+    parser.add_argument("--scale", type=int, default=10, help="Clip length in seconds")
+    parser.add_argument("--label-ratio", type=float, default=0.0)
+    parser.add_argument("--subjects", default="", help="Comma-separated subject names")
+    parser.add_argument("--sessions", default="", help="Comma-separated session names, e.g. v01,v02")
+    parser.add_argument("--cameras", default="", help="Comma-separated camera keys to include, e.g. video_RAW_YUV420,android_311YJP3P3080D200020")
+    parser.add_argument("--limit-sessions", type=int, default=0)
+    parser.add_argument("--openface-dir", default=str(CP.parent / "OpenFace"))
+    parser.add_argument("--dry-run", action="store_true")
+    return parser.parse_args()
+
+
+def split_csv_arg(value):
+    return {item.strip() for item in value.split(",") if item.strip()}
+
+
+def camera_sort_key(camera_key):
+    if camera_key == RAW_CAMERA_STEM:
+        return (0, camera_key)
+    if camera_key.startswith("android_"):
+        return (1, camera_key)
+    return (2, camera_key)
+
+
+def detect_camera_video(video_path):
+    stem = video_path.stem
+    session_dir = video_path.parent
+    if stem == RAW_CAMERA_STEM:
+        timestamp_path = session_dir / "frames_timestamp.csv"
+        return {
+            "camera_key": RAW_CAMERA_STEM,
+            "camera_label": RAW_CAMERA_STEM,
+            "timestamp_path": timestamp_path,
+        }
+
+    match = ANDROID_VIDEO_RE.match(stem)
+    if not match:
+        return None
+
+    device_id = match.group(1)
+    timestamp_path = session_dir / f"{device_id}_frames_timestamp.csv"
+    return {
+        "camera_key": device_id,
+        "camera_label": device_id,
+        "timestamp_path": timestamp_path,
+    }
+
+
+def discover_jobs(data_root, subjects_filter, sessions_filter, limit_sessions):
+    jobs = []
+    session_count = 0
+    for subject_dir in sorted(p for p in data_root.iterdir() if p.is_dir()):
+        if subjects_filter and subject_dir.name not in subjects_filter:
+            continue
+        for session_dir in sorted(p for p in subject_dir.iterdir() if p.is_dir() and SESSION_RE.match(p.name)):
+            if sessions_filter and session_dir.name not in sessions_filter:
+                continue
+            bvp_path = session_dir / "BVP.csv"
+            if not bvp_path.is_file():
+                continue
+            session_count += 1
+            for video_path in sorted(session_dir.glob("*.avi")) + sorted(session_dir.glob("*.mp4")):
+                camera_info = detect_camera_video(video_path)
+                if camera_info is None:
+                    continue
+                jobs.append(
+                    {
+                        "subject": subject_dir.name,
+                        "session": session_dir.name,
+                        "session_dir": session_dir,
+                        "video_path": video_path,
+                        "bvp_path": bvp_path,
+                        **camera_info,
+                    }
+                )
+            if limit_sessions and session_count >= limit_sessions:
+                return jobs
+    return jobs
+
+
+def ensure_gt_proxy(job, gt_root):
+    proxy_dir = gt_root / job["subject"] / job["session"] / job["camera_key"]
+    proxy_dir.mkdir(parents=True, exist_ok=True)
+    timestamp_src = job["timestamp_path"]
+    if not timestamp_src.is_file():
+        raise FileNotFoundError(f"Timestamp CSV not found: {timestamp_src}")
+    shutil.copy2(job["bvp_path"], proxy_dir / "BVP.csv")
+    shutil.copy2(timestamp_src, proxy_dir / "frames_timestamp.csv")
+    return proxy_dir
+
+
+def run_command(cmd, cwd, log_path, dry_run=False):
+    cmd_text = " ".join(str(part) for part in cmd)
+    if dry_run:
+        log_path.write_text(f"[dry-run]\n{cmd_text}\n", encoding="utf-8")
+        return 0
+
+    completed = subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    log_body = []
+    log_body.append(f"$ {cmd_text}")
+    if completed.stdout:
+        log_body.append("\n[stdout]\n" + completed.stdout)
+    if completed.stderr:
+        log_body.append("\n[stderr]\n" + completed.stderr)
+    log_path.write_text("\n".join(log_body), encoding="utf-8")
+    if completed.returncode != 0:
+        raise RuntimeError(f"Command failed ({completed.returncode}): {cmd_text}")
+    return completed.returncode
+
+
+def locate_single_run_dir(output_root, dry_run=False):
+    live_root = output_root / "live_runs"
+    if dry_run:
+        return live_root / "dry_run"
+    candidates = sorted((p for p in live_root.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime)
+    if not candidates:
+        raise FileNotFoundError(f"No live run directory found under: {live_root}")
+    return candidates[-1]
+
+
+def load_json(path):
+    if not path.is_file():
+        return {}
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def parse_evaluate_summary(summary_path):
+    metrics = {}
+    if not summary_path.is_file():
+        return metrics
+    text = summary_path.read_text(encoding="utf-8")
+
+    layer1_patterns = {
+        "psd_corr_mean": r"PSD: corr\s+([-0-9.]+)",
+        "psd_mse_mean": r"PSD: corr\s+[-0-9.]+[-0-9.]+, mse\s+([-0-9.eE]+)",
+        "capture_snr_mean": r"Capture-SNR:\s+([-0-9.]+)",
+        "ipr_mean": r"IPR:\s+([-0-9.]+)",
+        "wave_corr0_mean": r"Wave: corr0\s+([-0-9.]+),",
+        "wave_corr_lag_mean": r"Wave: corr0\s+[-0-9.]+, corr_lag\s+([-0-9.]+),",
+        "acf_corr_mean": r"Wave: corr0\s+[-0-9.]+, corr_lag\s+[-0-9.]+, acf\s+([-0-9.]+)",
+    }
+    for key, pattern in layer1_patterns.items():
+        match = re.search(pattern, text)
+        if match:
+            metrics[key] = float(match.group(1))
+
+    layer2 = re.search(
+        r"MAE\s+([-0-9.]+) BPM, RMSE\s+([-0-9.]+) BPM, P5\s+([-0-9.]+)%, P10\s+([-0-9.]+)%, Pearson\s+([-0-9.]+), n=(\d+)",
+        text,
+    )
+    if layer2:
+        metrics.update(
+            {
+                "mae_bpm": float(layer2.group(1)),
+                "rmse_bpm": float(layer2.group(2)),
+                "p5_percent": float(layer2.group(3)),
+                "p10_percent": float(layer2.group(4)),
+                "pearson_hr": float(layer2.group(5)),
+                "n_eval_clips": int(layer2.group(6)),
+            }
+        )
+    return metrics
+
+
+def mean_or_none(values):
+    values = [value for value in values if value is not None and not math.isnan(value)]
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def std_or_none(values):
+    values = [value for value in values if value is not None and not math.isnan(value)]
+    if len(values) < 2:
+        return 0.0 if values else None
+    avg = sum(values) / len(values)
+    variance = sum((value - avg) ** 2 for value in values) / (len(values) - 1)
+    return math.sqrt(variance)
+
+
+def write_csv(rows, path, fieldnames):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key) for key in fieldnames})
+
+
+def summarize_by_camera(rows, camera_order):
+    summary_rows = []
+    for camera_key in camera_order:
+        subset = [row for row in rows if row.get("status") == "ok" and row["camera_key"] == camera_key]
+        mae_values = [row.get("mae_bpm") for row in subset]
+        rmse_values = [row.get("rmse_bpm") for row in subset]
+        psd_values = [row.get("psd_corr_mean") for row in subset]
+        pearson_values = [row.get("pearson_hr") for row in subset]
+        clips_values = [row.get("n_eval_clips") for row in subset]
+        summary_rows.append(
+            {
+                "camera_key": camera_key,
+                "n_sessions": len(subset),
+                "mean_mae_bpm": mean_or_none(mae_values),
+                "std_mae_bpm": std_or_none(mae_values),
+                "mean_rmse_bpm": mean_or_none(rmse_values),
+                "mean_psd_corr": mean_or_none(psd_values),
+                "mean_pearson_hr": mean_or_none(pearson_values),
+                "mean_n_clips": mean_or_none(clips_values),
+            }
+        )
+    return summary_rows
+
+
+def build_paired_rows(rows, camera_order):
+    grouped = defaultdict(dict)
+    for row in rows:
+        if row.get("status") != "ok":
+            continue
+        grouped[(row["subject"], row["session"])][row["camera_key"]] = row
+
+    paired_rows = []
+    win_counts = {camera: 0 for camera in camera_order}
+    for (subject, session), by_camera in sorted(grouped.items()):
+        if any(camera not in by_camera for camera in camera_order):
+            continue
+        paired_row = {"subject": subject, "session": session}
+        mae_candidates = []
+        for camera in camera_order:
+            item = by_camera[camera]
+            paired_row[f"{camera}_mae_bpm"] = item.get("mae_bpm")
+            paired_row[f"{camera}_rmse_bpm"] = item.get("rmse_bpm")
+            paired_row[f"{camera}_psd_corr"] = item.get("psd_corr_mean")
+            if item.get("mae_bpm") is not None:
+                mae_candidates.append((item["mae_bpm"], camera))
+        if mae_candidates:
+            winner = min(mae_candidates)[1]
+            paired_row["best_camera_by_mae"] = winner
+            win_counts[winner] += 1
+        else:
+            paired_row["best_camera_by_mae"] = ""
+        paired_rows.append(paired_row)
+    return paired_rows, win_counts
+
+
+def main():
+    args = parse_args()
+    data_root = Path(args.data_root).expanduser().resolve()
+    results_root = Path(args.results_root).expanduser().resolve()
+    subjects_filter = split_csv_arg(args.subjects)
+    sessions_filter = split_csv_arg(args.sessions)
+    cameras_filter = split_csv_arg(args.cameras)
+
+    jobs = discover_jobs(data_root, subjects_filter, sessions_filter, args.limit_sessions)
+    if cameras_filter:
+        jobs = [j for j in jobs if j["camera_key"] in cameras_filter]
+        print(f"Camera filter active: keeping {len(jobs)} jobs for cameras: {cameras_filter}")
+    if not jobs:
+        raise SystemExit("No eligible videos found under data root.")
+
+    camera_order = sorted({job["camera_key"] for job in jobs}, key=camera_sort_key)
+    run_tag = time.strftime("%Y%m%d_%H%M%S")
+    run_root = results_root / run_tag
+    gt_root = run_root / "gt_proxy"
+    per_camera_root = run_root / "per_camera"
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    detail_rows = []
+    for index, job in enumerate(jobs, start=1):
+        print(
+            f"[{index}/{len(jobs)}] {job['subject']}/{job['session']} | "
+            f"{job['camera_key']} -> {job['video_path'].name}"
+        )
+        row = {
+            "subject": job["subject"],
+            "session": job["session"],
+            "camera_key": job["camera_key"],
+            "camera_label": job["camera_label"],
+            "video_path": str(job["video_path"]),
+            "timestamp_path": str(job["timestamp_path"]),
+            "bvp_path": str(job["bvp_path"]),
+            "status": "pending",
+        }
+        output_root = per_camera_root / job["subject"] / job["session"] / job["camera_key"]
+        output_root.mkdir(parents=True, exist_ok=True)
+        try:
+            gt_proxy_dir = ensure_gt_proxy(job, gt_root)
+            row["gt_proxy_dir"] = str(gt_proxy_dir)
+
+            infer_log = output_root / "infer.log"
+            infer_cmd = [
+                args.python_bin,
+                str(CP / "EfficientPhysNet" / "live_recorded_infer.py"),
+                "--video",
+                str(job["video_path"]),
+                "--session-dir",
+                str(gt_proxy_dir),
+                "--strategy",
+                args.strategy,
+                "--scales",
+                str(args.scale),
+                "--label-ratio",
+                str(args.label_ratio),
+                "--output-root",
+                str(output_root),
+                "--openface-dir",
+                args.openface_dir,
+            ]
+            run_command(infer_cmd, CP, infer_log, dry_run=args.dry_run)
+
+            live_run_dir = locate_single_run_dir(output_root, dry_run=args.dry_run)
+            row["live_run_dir"] = str(live_run_dir)
+            row["eval_bundle_dir"] = str(live_run_dir / f"eval_bundle_t{args.scale}s")
+            row["live_summary_path"] = str(live_run_dir / "summary.txt")
+
+            if not args.dry_run:
+                live_eval = load_json(live_run_dir / "eval_vs_gt.json")
+                t_key = f"t{args.scale}s"
+                if t_key in live_eval:
+                    row.update(live_eval[t_key])
+
+                eval_log = output_root / "evaluate.log"
+                eval_cmd = [
+                    args.python_bin,
+                    str(CP / "EfficientPhysNet" / "evaluation" / "evaluate.py"),
+                    str(live_run_dir / f"eval_bundle_t{args.scale}s"),
+                ]
+                run_command(eval_cmd, CP, eval_log, dry_run=False)
+                eval_summary_path = live_run_dir / f"eval_bundle_t{args.scale}s" / "eval" / "summary.txt"
+                row["evaluate_summary_path"] = str(eval_summary_path)
+                row.update(parse_evaluate_summary(eval_summary_path))
+            else:
+                row["evaluate_summary_path"] = str(live_run_dir / f"eval_bundle_t{args.scale}s" / "eval" / "summary.txt")
+
+            row["status"] = "ok"
+        except Exception as exc:
+            row["status"] = "error"
+            row["error"] = str(exc)
+        detail_rows.append(row)
+
+    detail_fields = [
+        "subject",
+        "session",
+        "camera_key",
+        "camera_label",
+        "status",
+        "error",
+        "video_path",
+        "timestamp_path",
+        "bvp_path",
+        "gt_proxy_dir",
+        "live_run_dir",
+        "eval_bundle_dir",
+        "live_summary_path",
+        "evaluate_summary_path",
+        "n",
+        "mae_bpm",
+        "rmse_bpm",
+        "psd_corr_mean",
+        "psd_mse_mean",
+        "capture_snr_mean",
+        "ipr_mean",
+        "wave_corr0_mean",
+        "wave_corr_lag_mean",
+        "acf_corr_mean",
+        "p5_percent",
+        "p10_percent",
+        "pearson_hr",
+        "n_eval_clips",
+    ]
+    write_csv(detail_rows, run_root / "camera_session_results.csv", detail_fields)
+
+    camera_summary = summarize_by_camera(detail_rows, camera_order)
+    write_csv(
+        camera_summary,
+        run_root / "camera_summary.csv",
+        [
+            "camera_key",
+            "n_sessions",
+            "mean_mae_bpm",
+            "std_mae_bpm",
+            "mean_rmse_bpm",
+            "mean_psd_corr",
+            "mean_pearson_hr",
+            "mean_n_clips",
+        ],
+    )
+
+    paired_rows, win_counts = build_paired_rows(detail_rows, camera_order)
+    paired_fields = ["subject", "session"]
+    for camera in camera_order:
+        paired_fields.extend(
+            [
+                f"{camera}_mae_bpm",
+                f"{camera}_rmse_bpm",
+                f"{camera}_psd_corr",
+            ]
+        )
+    paired_fields.append("best_camera_by_mae")
+    write_csv(paired_rows, run_root / "paired_session_comparison.csv", paired_fields)
+
+    common_gt_result = {
+        "clip_rows": [],
+        "session_summary_rows": [],
+        "camera_summary_rows": [],
+        "issues": [],
+        "common_root": "",
+    }
+    if not args.dry_run:
+        common_gt_result = build_common_gt_outputs(
+            detail_rows=detail_rows,
+            camera_order=camera_order,
+            run_root=run_root,
+            scale_sec=args.scale,
+        )
+
+    manifest = {
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "data_root": str(data_root),
+        "results_root": str(run_root),
+        "python_bin": args.python_bin,
+        "strategy": args.strategy,
+        "scale_sec": args.scale,
+        "label_ratio": args.label_ratio,
+        "camera_order": camera_order,
+        "jobs_total": len(jobs),
+        "jobs_ok": sum(1 for row in detail_rows if row["status"] == "ok"),
+        "jobs_error": sum(1 for row in detail_rows if row["status"] == "error"),
+        "paired_sessions": len(paired_rows),
+        "common_gt_sessions": len(common_gt_result.get("session_summary_rows", [])),
+        "common_gt_clips": len(common_gt_result.get("clip_rows", [])),
+        "common_gt_issues": len(common_gt_result.get("issues", [])),
+        "dry_run": args.dry_run,
+    }
+    (run_root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    summary_lines = []
+    summary_lines.append("Recorded 3-camera benchmark")
+    summary_lines.append("=" * 60)
+    summary_lines.append(f"data_root: {data_root}")
+    summary_lines.append(f"run_root: {run_root}")
+    summary_lines.append(f"python: {args.python_bin}")
+    summary_lines.append(f"strategy: {args.strategy} | scale: {args.scale}s")
+    summary_lines.append(f"jobs: total={len(jobs)}, ok={manifest['jobs_ok']}, error={manifest['jobs_error']}")
+    summary_lines.append(f"paired complete sessions: {len(paired_rows)}")
+    summary_lines.append("")
+    if common_gt_result.get("camera_summary_rows"):
+        summary_lines.append("Common-GT aligned summary (primary)")
+        for item in common_gt_result["camera_summary_rows"]:
+            summary_lines.append(
+                "  {camera}: clips={clips}, sessions={sessions}, MAE={mae}, RMSE={rmse}, clip_wins={clip_wins}, session_wins={session_wins}".format(
+                    camera=item["camera_key"],
+                    clips=item["n_common_clips"],
+                    sessions=item["n_sessions"],
+                    mae="N/A" if item["mean_common_mae_bpm"] is None else f"{item['mean_common_mae_bpm']:.2f}",
+                    rmse="N/A" if item["rmse_common_bpm"] is None else f"{item['rmse_common_bpm']:.2f}",
+                    clip_wins=item["clip_wins"],
+                    session_wins=item["session_wins"],
+                )
+            )
+        summary_lines.append(f"  outputs: {common_gt_result.get('common_root', '')}")
+        if common_gt_result.get("issues"):
+            summary_lines.append("")
+            summary_lines.append("Common-GT issues")
+            for issue in common_gt_result["issues"]:
+                summary_lines.append(f"  {issue}")
+        summary_lines.append("")
+    summary_lines.append("Legacy per-camera summary (camera-native timestamps)")
+    for item in camera_summary:
+        summary_lines.append(
+            "  {camera}: n={n}, MAE={mae}, RMSE={rmse}, PSD={psd}, Pearson={pearson}".format(
+                camera=item["camera_key"],
+                n=item["n_sessions"],
+                mae="N/A" if item["mean_mae_bpm"] is None else f"{item['mean_mae_bpm']:.2f}+-{item['std_mae_bpm']:.2f}",
+                rmse="N/A" if item["mean_rmse_bpm"] is None else f"{item['mean_rmse_bpm']:.2f}",
+                psd="N/A" if item["mean_psd_corr"] is None else f"{item['mean_psd_corr']:.4f}",
+                pearson="N/A" if item["mean_pearson_hr"] is None else f"{item['mean_pearson_hr']:.4f}",
+            )
+        )
+    if paired_rows:
+        summary_lines.append("")
+        summary_lines.append("Wins by paired-session MAE")
+        for camera in camera_order:
+            summary_lines.append(f"  {camera}: {win_counts.get(camera, 0)}")
+    if manifest["jobs_error"]:
+        summary_lines.append("")
+        summary_lines.append("Errors")
+        for row in detail_rows:
+            if row["status"] == "error":
+                summary_lines.append(
+                    f"  {row['subject']}/{row['session']}/{row['camera_key']}: {row.get('error', 'unknown error')}"
+                )
+
+    summary_path = run_root / "summary.txt"
+    summary_path.write_text("\n".join(summary_lines), encoding="utf-8")
+    print("\n".join(summary_lines))
+    print(f"\nSaved to: {summary_path}")
+
+
+if __name__ == "__main__":
+    main()

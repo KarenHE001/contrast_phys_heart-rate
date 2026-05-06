@@ -1,0 +1,672 @@
+#!/usr/bin/env python3
+import csv
+import json
+import math
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from scipy.interpolate import interp1d
+
+CP = Path(__file__).resolve().parents[2]
+if str(CP) not in sys.path:
+    sys.path.insert(0, str(CP))
+
+from utils_sig import butter_bandpass, compute_fft_peaks, hr_fft_parabolic, select_hr_from_peaks
+
+_USE_HARMONICS = True
+_COLOR_MAP = {
+    "gt": "#111111",
+    "video_RAW_YUV420": "#d1495b",
+    "android_311YJP3P3080D200020": "#00798c",
+    "android_RFCN3050F7T": "#edae49",
+}
+
+
+def mean_or_none(values):
+    cleaned = []
+    for value in values:
+        if value is None:
+            continue
+        value = float(value)
+        if math.isnan(value):
+            continue
+        cleaned.append(value)
+    if not cleaned:
+        return None
+    return sum(cleaned) / len(cleaned)
+
+
+def rmse_or_none(values):
+    cleaned = []
+    for value in values:
+        if value is None:
+            continue
+        value = float(value)
+        if math.isnan(value):
+            continue
+        cleaned.append(value)
+    if not cleaned:
+        return None
+    arr = np.asarray(cleaned, dtype=np.float64)
+    return float(np.sqrt(np.mean(arr ** 2)))
+
+
+def write_csv(rows, path, fieldnames):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key) for key in fieldnames})
+
+
+def load_json(path):
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def load_object_npy(path):
+    obj = np.load(str(path), allow_pickle=True)
+    if isinstance(obj, np.ndarray) and obj.shape == ():
+        obj = obj.item()
+    return obj
+
+
+def load_eval_bundle(bundle_dir):
+    bundle_path = Path(bundle_dir) / "session.npy"
+    if not bundle_path.is_file():
+        raise FileNotFoundError(bundle_path)
+    obj = load_object_npy(bundle_path)
+    if not isinstance(obj, dict):
+        raise TypeError(f"Unexpected bundle type: {type(obj)}")
+    return obj
+
+
+def load_clip_payload(live_run_dir, scale_sec, subject, session, camera_key):
+    live_run_dir = Path(live_run_dir)
+    info = load_json(live_run_dir / "inference_by_scale.json")
+    meta = load_json(live_run_dir / "meta.json")
+    key = f"t{scale_sec}s"
+    clips_meta = info.get(key, {}).get("clips", [])
+    bundle = load_eval_bundle(live_run_dir / f"eval_bundle_{key}")
+    rppg_list = list(bundle.get("rppg_list", []))
+
+    clips = []
+    for index, clip_meta in enumerate(clips_meta):
+        if index >= len(rppg_list):
+            break
+        start_wall = clip_meta.get("time_start_wall")
+        end_wall = clip_meta.get("time_end_wall")
+        if start_wall is None or end_wall is None:
+            continue
+        rppg = np.asarray(rppg_list[index], dtype=np.float32).reshape(-1)
+        if rppg.size < 8:
+            continue
+        clips.append(
+            {
+                "subject": subject,
+                "session": session,
+                "camera_key": camera_key,
+                "clip_idx": int(clip_meta.get("clip_idx", index + 1)),
+                "time_start_wall": float(start_wall),
+                "time_end_wall": float(end_wall),
+                "duration_sec": float(end_wall) - float(start_wall),
+                "hr_pred_native_bpm": clip_meta.get("hr_pred_bpm"),
+                "rppg": rppg,
+            }
+        )
+
+    return {
+        "clips": clips,
+        "fs": int(meta.get("fs", 30)),
+        "input_size": int(meta.get("input_size", 96)),
+    }
+
+
+def load_session_gt_pack(session_dir):
+    session_dir = Path(session_dir)
+    bvp_path = session_dir / "BVP.csv"
+    if not bvp_path.is_file():
+        raise FileNotFoundError(bvp_path)
+
+    bvp_df = pd.read_csv(bvp_path)
+    t_bvp = bvp_df.iloc[:, 0].values.astype(np.float64)
+    bvp_raw = bvp_df.iloc[:, 1].values.astype(np.float64)
+    interp_bvp = interp1d(
+        t_bvp,
+        bvp_raw,
+        kind="linear",
+        bounds_error=False,
+        fill_value="extrapolate",
+    )
+    return {
+        "interp_bvp": interp_bvp,
+        "time_min": float(np.min(t_bvp)),
+        "time_max": float(np.max(t_bvp)),
+    }
+
+
+def _estimate_hr(sig_filtered, fs_hz):
+    hr_raw, _, _ = hr_fft_parabolic(
+        sig_filtered, fs=fs_hz, harmonics_removal=_USE_HARMONICS
+    )
+    peaks = compute_fft_peaks(sig_filtered, fs_hz)
+    hr_sel, _ = select_hr_from_peaks(
+        peaks, fs_hz, len(sig_filtered), use_harmonics_removal=_USE_HARMONICS
+    )
+    return float(hr_sel if hr_sel is not None else hr_raw)
+
+
+def bandpass_signal(sig, fs_hz):
+    sig = np.asarray(sig, dtype=np.float32).reshape(-1)
+    if sig.size < 8:
+        return None
+    try:
+        return butter_bandpass(sig, lowcut=0.6, highcut=4.0, fs=fs_hz)
+    except Exception:
+        return None
+
+
+def normalize_signal(sig):
+    sig = np.asarray(sig, dtype=np.float32).reshape(-1)
+    if sig.size == 0:
+        return sig
+    sig = sig - np.mean(sig)
+    std = float(np.std(sig))
+    if std < 1e-8:
+        return sig
+    return sig / std
+
+
+def overlap_seconds(a_start, a_end, b_start, b_end):
+    return max(0.0, min(a_end, b_end) - max(a_start, b_start))
+
+
+def choose_reference_camera(clips_by_camera, camera_order):
+    return min(camera_order, key=lambda camera: len(clips_by_camera[camera]))
+
+
+def build_relative_timeline(payload_by_camera, camera_order):
+    relative = {}
+    first_starts = []
+    for camera in camera_order:
+        clips = payload_by_camera[camera]["clips"]
+        if not clips:
+            relative[camera] = []
+            continue
+        offset = clips[0]["time_start_wall"]
+        first_starts.append(offset)
+        rel_clips = []
+        for clip in clips:
+            rel_clip = dict(clip)
+            rel_clip["match_start_sec"] = float(clip["time_start_wall"] - offset)
+            rel_clip["match_end_sec"] = float(clip["time_end_wall"] - offset)
+            rel_clips.append(rel_clip)
+        relative[camera] = rel_clips
+    gt_anchor_wall = float(np.median(first_starts)) if first_starts else 0.0
+    return relative, gt_anchor_wall
+
+
+def match_common_clip_groups(clips_by_camera, camera_order, scale_sec):
+    min_overlap_sec = max(scale_sec * 0.8, scale_sec - 2.0)
+    reference_camera = choose_reference_camera(clips_by_camera, camera_order)
+    used = {camera: set() for camera in camera_order if camera != reference_camera}
+    groups = []
+
+    for ref_clip in sorted(clips_by_camera[reference_camera], key=lambda item: item["match_start_sec"]):
+        matched = {reference_camera: ref_clip}
+        starts = [ref_clip["match_start_sec"]]
+        ends = [ref_clip["match_end_sec"]]
+        ok = True
+        for camera in camera_order:
+            if camera == reference_camera:
+                continue
+            best_clip = None
+            best_overlap = 0.0
+            for candidate in clips_by_camera[camera]:
+                if candidate["clip_idx"] in used[camera]:
+                    continue
+                cur_overlap = overlap_seconds(
+                    ref_clip["match_start_sec"],
+                    ref_clip["match_end_sec"],
+                    candidate["match_start_sec"],
+                    candidate["match_end_sec"],
+                )
+                if cur_overlap > best_overlap:
+                    best_clip = candidate
+                    best_overlap = cur_overlap
+            if best_clip is None or best_overlap < min_overlap_sec:
+                ok = False
+                break
+            matched[camera] = best_clip
+            starts.append(best_clip["match_start_sec"])
+            ends.append(best_clip["match_end_sec"])
+        if not ok:
+            continue
+
+        shared_start = max(starts)
+        shared_end = min(ends)
+        shared_duration = shared_end - shared_start
+        if shared_duration < min_overlap_sec:
+            continue
+
+        for camera in camera_order:
+            if camera == reference_camera:
+                continue
+            used[camera].add(matched[camera]["clip_idx"])
+
+        groups.append(
+            {
+                "shared_start_sec": float(shared_start),
+                "shared_end_sec": float(shared_end),
+                "shared_duration_sec": float(shared_duration),
+                "clips": matched,
+            }
+        )
+    return groups
+
+
+def resample_signal_to_window(sig, src_start, src_end, dst_times):
+    sig = np.asarray(sig, dtype=np.float32).reshape(-1)
+    if sig.size < 8 or src_end <= src_start:
+        return None
+    src_times = np.linspace(src_start, src_end, num=sig.size, endpoint=False, dtype=np.float64)
+    if dst_times[0] < src_times[0] - 1e-6 or dst_times[-1] > src_times[-1] + 1e-3:
+        return None
+    return np.interp(dst_times, src_times, sig).astype(np.float32)
+
+
+def evaluate_common_group(subject, session, group_idx, group, gt_pack, gt_anchor_wall, camera_order, fs_hz):
+    shared_start_sec = group["shared_start_sec"]
+    shared_end_sec = group["shared_end_sec"]
+    duration = group["shared_duration_sec"]
+    n_samples = max(int(round(duration * fs_hz)), 64)
+    dst_times_rel = np.linspace(shared_start_sec, shared_end_sec, num=n_samples, endpoint=False, dtype=np.float64)
+    dst_times_abs = gt_anchor_wall + dst_times_rel
+
+    gt_wave = gt_pack["interp_bvp"](dst_times_abs).astype(np.float32)
+    gt_filtered = bandpass_signal(gt_wave, fs_hz)
+    if gt_filtered is None:
+        return None, None
+    hr_gt = _estimate_hr(gt_filtered, fs_hz)
+
+    row = {
+        "subject": subject,
+        "session": session,
+        "common_clip_idx": group_idx,
+        "window_start_rel_s": float(shared_start_sec),
+        "window_end_rel_s": float(shared_end_sec),
+        "gt_window_start_wall": float(dst_times_abs[0]),
+        "gt_window_end_wall": float(dst_times_abs[-1]) if len(dst_times_abs) else float(gt_anchor_wall),
+        "window_duration_sec": float(duration),
+        "gt_hr_bpm": float(hr_gt),
+    }
+    payload = {
+        "subject": subject,
+        "session": session,
+        "common_clip_idx": group_idx,
+        "window_duration_sec": float(duration),
+        "time_sec": dst_times_rel - shared_start_sec,
+        "signals": {"gt": gt_filtered},
+        "fs": fs_hz,
+        "gt_hr_bpm": float(hr_gt),
+    }
+
+    err_candidates = []
+    for camera in camera_order:
+        clip = group["clips"][camera]
+        pred_wave = resample_signal_to_window(
+            clip["rppg"],
+            clip["match_start_sec"],
+            clip["match_end_sec"],
+            dst_times_rel,
+        )
+        row[f"{camera}_clip_idx"] = clip["clip_idx"]
+        if pred_wave is None:
+            row[f"{camera}_pred_hr_bpm"] = None
+            row[f"{camera}_err_bpm"] = None
+            continue
+
+        pred_filtered = bandpass_signal(pred_wave, fs_hz)
+        if pred_filtered is None:
+            row[f"{camera}_pred_hr_bpm"] = None
+            row[f"{camera}_err_bpm"] = None
+            continue
+
+        hr_pred = _estimate_hr(pred_filtered, fs_hz)
+        err = abs(hr_pred - hr_gt)
+        row[f"{camera}_pred_hr_bpm"] = float(hr_pred)
+        row[f"{camera}_err_bpm"] = float(err)
+        payload["signals"][camera] = pred_filtered
+        err_candidates.append((float(err), camera))
+
+    row["best_camera_by_err"] = min(err_candidates)[1] if err_candidates else ""
+    return row, payload
+
+
+def save_clip_waveform_plot(plot_path, payload, row, camera_order):
+    fig, ax = plt.subplots(figsize=(12, 4.5), constrained_layout=True)
+    time_sec = payload["time_sec"]
+
+    gt_sig = normalize_signal(payload["signals"]["gt"])
+    ax.plot(time_sec, gt_sig, label=f"GT ({row['gt_hr_bpm']:.1f} BPM)", color=_COLOR_MAP["gt"], linewidth=2.2)
+
+    for camera in camera_order:
+        if camera not in payload["signals"]:
+            continue
+        sig = normalize_signal(payload["signals"][camera])
+        hr_val = row.get(f"{camera}_pred_hr_bpm")
+        err_val = row.get(f"{camera}_err_bpm")
+        label = camera
+        if hr_val is not None and err_val is not None:
+            label = f"{camera} ({hr_val:.1f} BPM, err {err_val:.1f})"
+        ax.plot(time_sec, sig, label=label, linewidth=1.6, alpha=0.95, color=_COLOR_MAP.get(camera))
+
+    ax.set_title(
+        f"{row['subject']}/{row['session']} | aligned clip {row['common_clip_idx']:02d} | shared window {row['window_duration_sec']:.2f}s"
+    )
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Normalized amplitude")
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="upper right", fontsize=8)
+    plot_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(plot_path, dpi=180)
+    plt.close(fig)
+
+
+def save_t60_summary_plot(plot_path, session_rows, session_payloads, camera_order, scale_sec):
+    if not session_rows or not session_payloads:
+        return
+    max_groups = max(1, int(60 / max(scale_sec, 1)))
+    rows = session_rows[:max_groups]
+    payloads = session_payloads[:max_groups]
+
+    fig, axes = plt.subplots(2, 1, figsize=(13, 8), constrained_layout=True)
+
+    x = np.arange(1, len(rows) + 1)
+    axes[0].plot(x, [row["gt_hr_bpm"] for row in rows], marker="o", linewidth=2.2, color=_COLOR_MAP["gt"], label="GT")
+    for camera in camera_order:
+        y = [row.get(f"{camera}_pred_hr_bpm") for row in rows]
+        axes[0].plot(x, y, marker="o", linewidth=1.6, label=camera, color=_COLOR_MAP.get(camera))
+    axes[0].set_title(f"{rows[0]['subject']}/{rows[0]['session']} | first {len(rows)} aligned clips (~{len(rows) * scale_sec}s) HR summary")
+    axes[0].set_xlabel("Aligned clip index")
+    axes[0].set_ylabel("HR (BPM)")
+    axes[0].set_xticks(x)
+    axes[0].grid(True, alpha=0.25)
+    axes[0].legend(loc="best", fontsize=8)
+
+    concat_times = []
+    concat_signals = {"gt": []}
+    for camera in camera_order:
+        concat_signals[camera] = []
+    offset = 0.0
+    for payload in payloads:
+        time_axis = payload["time_sec"]
+        if len(time_axis) == 0:
+            continue
+        dt = float(time_axis[1] - time_axis[0]) if len(time_axis) > 1 else 1.0 / float(payload["fs"])
+        local_time = offset + np.arange(len(time_axis), dtype=np.float64) * dt
+        concat_times.append(local_time)
+        concat_signals["gt"].append(normalize_signal(payload["signals"]["gt"]))
+        for camera in camera_order:
+            if camera in payload["signals"]:
+                concat_signals[camera].append(normalize_signal(payload["signals"][camera]))
+        offset = float(local_time[-1] + dt)
+
+    if concat_times:
+        full_time = np.concatenate(concat_times)
+        axes[1].plot(full_time, np.concatenate(concat_signals["gt"]), linewidth=2.0, color=_COLOR_MAP["gt"], label="GT")
+        for camera in camera_order:
+            if concat_signals[camera]:
+                axes[1].plot(full_time, np.concatenate(concat_signals[camera]), linewidth=1.2, alpha=0.9, label=camera, color=_COLOR_MAP.get(camera))
+        axes[1].set_title("Concatenated waveform summary")
+        axes[1].set_xlabel("Time (s)")
+        axes[1].set_ylabel("Normalized amplitude")
+        axes[1].grid(True, alpha=0.25)
+        axes[1].legend(loc="upper right", fontsize=8)
+
+    plot_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(plot_path, dpi=180)
+    plt.close(fig)
+
+
+def build_common_gt_outputs(detail_rows, camera_order, run_root, scale_sec):
+    run_root = Path(run_root)
+    common_root = run_root / "common_gt"
+    per_session_root = common_root / "per_session"
+    viz_t10_root = common_root / "viz_t10s"
+    viz_t60_root = common_root / "viz_t60s"
+    common_root.mkdir(parents=True, exist_ok=True)
+
+    grouped = defaultdict(dict)
+    for row in detail_rows:
+        if row.get("status") != "ok":
+            continue
+        grouped[(row["subject"], row["session"])][row["camera_key"]] = row
+
+    aligned_clip_rows = []
+    session_summary_rows = []
+    issues = []
+    clip_win_counts = {camera: 0 for camera in camera_order}
+    session_win_counts = {camera: 0 for camera in camera_order}
+
+    for (subject, session), by_camera in sorted(grouped.items()):
+        if any(camera not in by_camera for camera in camera_order):
+            issues.append(f"skip {subject}/{session}: incomplete camera set")
+            continue
+
+        try:
+            session_dir = Path(by_camera[camera_order[0]]["bvp_path"]).parent
+            gt_pack = load_session_gt_pack(session_dir)
+            payload_by_camera = {}
+            fs_values = set()
+            for camera in camera_order:
+                payload = load_clip_payload(
+                    by_camera[camera]["live_run_dir"],
+                    scale_sec,
+                    subject,
+                    session,
+                    camera,
+                )
+                payload_by_camera[camera] = payload
+                fs_values.add(payload["fs"])
+            if len(fs_values) != 1:
+                issues.append(f"skip {subject}/{session}: inconsistent fs {sorted(fs_values)}")
+                continue
+            if any(not payload_by_camera[camera]["clips"] for camera in camera_order):
+                issues.append(f"skip {subject}/{session}: missing timing-aware clips")
+                continue
+
+            fs_hz = fs_values.pop()
+            relative_clips, gt_anchor_wall = build_relative_timeline(payload_by_camera, camera_order)
+            groups = match_common_clip_groups(relative_clips, camera_order, scale_sec)
+            if not groups:
+                issues.append(f"skip {subject}/{session}: no common overlapping clips")
+                continue
+
+            session_rows = []
+            session_payloads = []
+            for group_idx, group in enumerate(groups, start=1):
+                row, payload = evaluate_common_group(
+                    subject,
+                    session,
+                    group_idx,
+                    group,
+                    gt_pack,
+                    gt_anchor_wall,
+                    camera_order,
+                    fs_hz,
+                )
+                if row is None or payload is None:
+                    continue
+                aligned_clip_rows.append(row)
+                session_rows.append(row)
+                session_payloads.append(payload)
+                if row.get("best_camera_by_err"):
+                    clip_win_counts[row["best_camera_by_err"]] += 1
+                save_clip_waveform_plot(
+                    viz_t10_root / f"{subject}__{session}__clip_{group_idx:03d}.png",
+                    payload,
+                    row,
+                    camera_order,
+                )
+
+            if not session_rows:
+                issues.append(f"skip {subject}/{session}: common clips could not be evaluated")
+                continue
+
+            session_rows = sorted(session_rows, key=lambda item: item["common_clip_idx"])
+            session_payloads = sorted(session_payloads, key=lambda item: item["common_clip_idx"])
+            session_summary = {
+                "subject": subject,
+                "session": session,
+                "n_common_clips": len(session_rows),
+            }
+            mae_candidates = []
+            for camera in camera_order:
+                errs = [row.get(f"{camera}_err_bpm") for row in session_rows]
+                mean_mae = mean_or_none(errs)
+                rmse = rmse_or_none(errs)
+                session_summary[f"{camera}_mean_mae_bpm"] = mean_mae
+                session_summary[f"{camera}_rmse_bpm"] = rmse
+                if mean_mae is not None:
+                    mae_candidates.append((mean_mae, camera))
+            session_summary["best_camera_by_mae"] = min(mae_candidates)[1] if mae_candidates else ""
+            if session_summary["best_camera_by_mae"]:
+                session_win_counts[session_summary["best_camera_by_mae"]] += 1
+            session_summary_rows.append(session_summary)
+
+            session_dir_out = per_session_root / subject / session
+            session_dir_out.mkdir(parents=True, exist_ok=True)
+            clip_fields = [
+                "subject",
+                "session",
+                "common_clip_idx",
+                "window_start_rel_s",
+                "window_end_rel_s",
+                "gt_window_start_wall",
+                "gt_window_end_wall",
+                "window_duration_sec",
+                "gt_hr_bpm",
+            ]
+            for camera in camera_order:
+                clip_fields.extend(
+                    [
+                        f"{camera}_clip_idx",
+                        f"{camera}_pred_hr_bpm",
+                        f"{camera}_err_bpm",
+                    ]
+                )
+            clip_fields.append("best_camera_by_err")
+            write_csv(session_rows, session_dir_out / "aligned_clip_comparison.csv", clip_fields)
+            save_t60_summary_plot(
+                viz_t60_root / f"{subject}__{session}__t60_summary.png",
+                session_rows,
+                session_payloads,
+                camera_order,
+                scale_sec,
+            )
+        except Exception as exc:
+            issues.append(f"skip {subject}/{session}: {exc}")
+
+    aligned_clip_fields = [
+        "subject",
+        "session",
+        "common_clip_idx",
+        "window_start_rel_s",
+        "window_end_rel_s",
+        "gt_window_start_wall",
+        "gt_window_end_wall",
+        "window_duration_sec",
+        "gt_hr_bpm",
+    ]
+    for camera in camera_order:
+        aligned_clip_fields.extend(
+            [
+                f"{camera}_clip_idx",
+                f"{camera}_pred_hr_bpm",
+                f"{camera}_err_bpm",
+            ]
+        )
+    aligned_clip_fields.append("best_camera_by_err")
+    write_csv(aligned_clip_rows, common_root / "aligned_clip_comparison.csv", aligned_clip_fields)
+
+    session_fields = ["subject", "session", "n_common_clips"]
+    for camera in camera_order:
+        session_fields.extend([f"{camera}_mean_mae_bpm", f"{camera}_rmse_bpm"])
+    session_fields.append("best_camera_by_mae")
+    write_csv(session_summary_rows, common_root / "aligned_session_summary.csv", session_fields)
+
+    camera_summary_rows = []
+    for camera in camera_order:
+        camera_rows = [row for row in aligned_clip_rows if row.get(f"{camera}_err_bpm") is not None]
+        err_values = [row.get(f"{camera}_err_bpm") for row in camera_rows]
+        camera_summary_rows.append(
+            {
+                "camera_key": camera,
+                "n_common_clips": len(camera_rows),
+                "n_sessions": sum(1 for row in session_summary_rows if row.get(f"{camera}_mean_mae_bpm") is not None),
+                "mean_common_mae_bpm": mean_or_none(err_values),
+                "rmse_common_bpm": rmse_or_none(err_values),
+                "clip_wins": clip_win_counts.get(camera, 0),
+                "session_wins": session_win_counts.get(camera, 0),
+            }
+        )
+    write_csv(
+        camera_summary_rows,
+        common_root / "aligned_camera_summary.csv",
+        [
+            "camera_key",
+            "n_common_clips",
+            "n_sessions",
+            "mean_common_mae_bpm",
+            "rmse_common_bpm",
+            "clip_wins",
+            "session_wins",
+        ],
+    )
+
+    summary_lines = []
+    summary_lines.append("Common-GT aligned comparison")
+    summary_lines.append("=" * 60)
+    summary_lines.append("alignment: per-camera relative start -> shared GT anchor")
+    summary_lines.append(f"run_root: {run_root}")
+    summary_lines.append(f"aligned clips: {len(aligned_clip_rows)}")
+    summary_lines.append(f"aligned sessions: {len(session_summary_rows)}")
+    summary_lines.append(f"issues: {len(issues)}")
+    summary_lines.append("")
+    for item in camera_summary_rows:
+        summary_lines.append(
+            "  {camera}: clips={clips}, sessions={sessions}, MAE={mae}, RMSE={rmse}, clip_wins={clip_wins}, session_wins={session_wins}".format(
+                camera=item["camera_key"],
+                clips=item["n_common_clips"],
+                sessions=item["n_sessions"],
+                mae="N/A" if item["mean_common_mae_bpm"] is None else f"{item['mean_common_mae_bpm']:.2f}",
+                rmse="N/A" if item["rmse_common_bpm"] is None else f"{item['rmse_common_bpm']:.2f}",
+                clip_wins=item["clip_wins"],
+                session_wins=item["session_wins"],
+            )
+        )
+    if issues:
+        summary_lines.append("")
+        summary_lines.append("Issues")
+        for issue in issues:
+            summary_lines.append(f"  {issue}")
+    (common_root / "summary.txt").write_text("\n".join(summary_lines), encoding="utf-8")
+
+    return {
+        "clip_rows": aligned_clip_rows,
+        "session_summary_rows": session_summary_rows,
+        "camera_summary_rows": camera_summary_rows,
+        "issues": issues,
+        "common_root": str(common_root),
+    }

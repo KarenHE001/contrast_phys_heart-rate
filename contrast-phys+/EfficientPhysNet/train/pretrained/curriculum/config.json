@@ -1,0 +1,27 @@
+{
+  "S": 2,
+  "batch_size": 2,
+  "fs": 30,
+  "in_ch": 3,
+  "input_size": 96,
+  "label_ratio": 0,
+  "lr": 1e-05,
+  "result_dir": "results/label_ratio_0",
+  "seed": 45577197,
+  "stage_K": [
+    8,
+    6,
+    5,
+    4
+  ],
+  "stage_secs": [
+    60,
+    30,
+    20,
+    10
+  ],
+  "test_mode": false,
+  "total_epoch": 30,
+  "use_amp": true,
+  "weight_strategy": "curriculum"
+}
