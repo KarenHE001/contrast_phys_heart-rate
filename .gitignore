@@ -205,3 +205,16 @@ contrast-phys+/test_with_stride.py
 compile_openface_macos.sh
 quick_start.py
 prep/install_opencv_from_existing.sh
+# PhysRecorder 数据目录（仅本地）
+phyrecorder/
+
+# 辅助/调试脚本（仅本地）
+contrast-phys+/_*.py
+
+# EfficientPhysNet & PhysNet_2D 预训练权重例外
+!contrast-phys+/pretrained/EfficientPhysNet/
+!contrast-phys+/pretrained/EfficientPhysNet/**/*.pt
+!contrast-phys+/pretrained/EfficientPhysNet/**/*.json
+!contrast-phys+/pretrained/EfficientPhysNet/**/*.npy
+!contrast-phys+/pretrained/PhysNet_2D/
+!contrast-phys+/pretrained/PhysNet_2D/*.pt

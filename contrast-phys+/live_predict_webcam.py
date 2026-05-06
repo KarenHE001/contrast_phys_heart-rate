@@ -1,25 +1,13 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-============================================================
-实时/离线视频 rPPG 预测 + HR 估计
-============================================================
+live_predict_webcam.py - 视频 rPPG 推理 + HR 估计
 
-功能：
-1. 从摄像头或视频文件采集人脸视频
-2. 使用训练好的模型预测 rPPG 信号
-3. 从 rPPG 估计心率（FFT 方法）
-4. 诊断信号质量和峰值选择问题
+用途: 对视频文件或摄像头进行 rPPG 推理，输出 HR。phyrecorder 目录（含 BVP.csv/HR.csv）
+     时自动加载 GT 对比，并生成 BVP+rPPG 波形可视化。
 
-使用场景：
-- 实时摄像头测试：验证模型在真实场景下的表现
-- 离线视频测试：分析已录制的视频
-
-主要流程：
-Step 1: 采集视频（人脸检测/裁剪 -> 128x128）
-Step 2: 模型推理（rPPG 信号提取）
-Step 3: 心率估计（FFT）
-Step 4: 诊断分析（信号质量、峰值分析）
+流程: 视频 -> OpenFace/Haar 裁剪 -> PhysNet -> rPPG -> FFT -> HR
+GT: 优先 HR.csv（血氧仪直接输出），无则 BVP.csv 插值后 FFT
 
 =============================================================================
 【训练一致性检查清单】用于排查 live/recorded 效果差的原因
@@ -72,6 +60,7 @@ if _PROJECT_ROOT not in sys.path and not os.path.exists(os.path.join(_EVAL_DIR, 
 
 from utils_paths import find_latest_run, find_latest_run_any, get_live_runs_subdir
 from PhysNetModel import PhysNet
+# from EfficientPhysNet import EfficientPhysNet
 from utils_inference import dl_model
 from utils_sig import butter_bandpass, hr_fft_parabolic, hr_fft, SNR_get
 from scipy import signal
@@ -117,6 +106,8 @@ def parse_args():
                         help="UBFC 全流程：录制 -> OpenFace -> 推理 -> viz。--source 视频文件时可跳过录制")
     parser.add_argument("--camera-index", type=int, default=0,
                         help="摄像头索引，0 失败时可试 1 或 2")
+    parser.add_argument("--5s", dest="five_sec", action="store_true",
+                        help="5s模式：只读取/使用前120帧进行推理（120帧@30fps≈4s，快速测试用）")
     return parser.parse_args()
 
 
@@ -893,11 +884,88 @@ def estimate_hr(rppg, fs, use_harmonics_removal, use_hr_fft, duration=10):
     return hr_fft_selected, peaks, quality, rppg_filtered, peak_locs
 
 
-def load_gt_hr_from_bvp_csv(video_path, fs, use_harmonics, use_hr_fft, n_frames=300):
+def load_gt_hr_from_hr_csv(video_path, n_frames=300, use_first_n=False):
     """
-    当视频来自 RPPG_data_benny_eric/subject/v01/ 时，从同目录的 BVP.csv 和 frames_timestamp.csv
-    加载 GT，对齐最后 n_frames 帧对应时间戳的 BVP，滤波后估计 HR。
-    Returns: (hr_gt, bvp_aligned) 或 (None, None) 若 BVP 不存在
+    从 HR.csv 读取血氧仪直接输出的 HR，按 frames_timestamp 对齐推理窗口。
+    use_first_n: True=5s模式用前n帧，False=用最后n帧
+    Returns: hr_gt 或 None
+    """
+    if not video_path or not os.path.isfile(video_path):
+        return None
+    dir_path = os.path.dirname(os.path.abspath(video_path))
+    hr_path = os.path.join(dir_path, "HR.csv")
+    ts_path = os.path.join(dir_path, "frames_timestamp.csv")
+    if not os.path.isfile(hr_path) or not os.path.isfile(ts_path):
+        return None
+
+    hr_df = pd.read_csv(hr_path)
+    ts_df = pd.read_csv(ts_path)
+    t_hr = hr_df.iloc[:, 0].values.astype(float)
+    hr_vals = hr_df.iloc[:, 1].values.astype(float)
+    ts_col = ts_df.columns[1]
+    timestamps = ts_df[ts_col].values.astype(float)
+
+    if len(timestamps) < n_frames:
+        return None
+    if use_first_n:
+        win_ts = timestamps[:n_frames]
+    else:
+        win_ts = timestamps[-n_frames:]
+    t_min, t_max = win_ts.min(), win_ts.max()
+    mask = (t_hr >= t_min) & (t_hr <= t_max)
+    if not np.any(mask):
+        return None
+    return float(np.median(hr_vals[mask]))
+
+
+def load_bvp_aligned(video_path, n_frames=300, use_first_n=False):
+    """BVP.csv 按 frames_timestamp 插值到推理窗口，用于可视化。Returns bvp_aligned 或 None"""
+    if not video_path or not os.path.isfile(video_path):
+        return None
+    dir_path = os.path.dirname(os.path.abspath(video_path))
+    bvp_path = os.path.join(dir_path, "BVP.csv")
+    ts_path = os.path.join(dir_path, "frames_timestamp.csv")
+    if not os.path.isfile(bvp_path) or not os.path.isfile(ts_path):
+        return None
+    bvp_df = pd.read_csv(bvp_path)
+    ts_df = pd.read_csv(ts_path)
+    t_bvp = bvp_df.iloc[:, 0].values.astype(float)
+    bvp_raw = bvp_df.iloc[:, 1].values.astype(float)
+    ts_col = ts_df.columns[1]
+    timestamps = ts_df[ts_col].values.astype(float)
+    if len(timestamps) < n_frames:
+        return None
+    win_ts = timestamps[:n_frames] if use_first_n else timestamps[-n_frames:]
+    interp_fn = interp1d(t_bvp, bvp_raw, kind="linear", bounds_error=False, fill_value="extrapolate")
+    return interp_fn(win_ts).astype(np.float32)
+
+
+def plot_bvp_rppg_viz(bvp, rppg, fs, hr_pred, hr_gt, output_path):
+    """血氧仪 BVP + 模型 rPPG 双波形图"""
+    n = min(len(bvp), len(rppg))
+    t = np.arange(n) / fs
+    fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
+    bvp_n = (bvp[:n] - np.mean(bvp[:n])) / (np.std(bvp[:n]) + 1e-9)
+    rppg_n = (rppg[:n] - np.mean(rppg[:n])) / (np.std(rppg[:n]) + 1e-9)
+    axes[0].plot(t, bvp_n, 'b-', linewidth=1, label=f'BVP (GT HR={hr_gt:.1f})')
+    axes[0].set_ylabel('BVP (norm)')
+    axes[0].legend(loc='upper right')
+    axes[0].grid(True, alpha=0.3)
+    axes[1].plot(t, rppg_n, 'g-', linewidth=1, label=f'rPPG (Pred HR={hr_pred:.1f})')
+    axes[1].set_xlabel('Time (s)')
+    axes[1].set_ylabel('rPPG (norm)')
+    axes[1].legend(loc='upper right')
+    axes[1].grid(True, alpha=0.3)
+    plt.suptitle(f'HR Pred: {hr_pred:.1f} | GT: {hr_gt:.1f} | Error: {hr_pred - hr_gt:+.1f} BPM')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+def load_gt_hr_from_bvp_csv(video_path, fs, use_harmonics, use_hr_fft, n_frames=300, use_first_n=False):
+    """
+    从 BVP.csv 插值到帧时间戳，滤波后 FFT 估计 HR。HR.csv 不存在时 fallback。
+    Returns: (hr_gt, bvp_aligned) 或 (None, None)
     """
     if not video_path or not os.path.isfile(video_path):
         return None, None
@@ -911,18 +979,17 @@ def load_gt_hr_from_bvp_csv(video_path, fs, use_harmonics, use_hr_fft, n_frames=
     ts_df = pd.read_csv(ts_path)
     t_bvp = bvp_df.iloc[:, 0].values.astype(float)
     bvp_raw = bvp_df.iloc[:, 1].values.astype(float)
-    frame_col = ts_df.columns[0]
     ts_col = ts_df.columns[1]
-    frame_indices = ts_df[frame_col].values
     timestamps = ts_df[ts_col].values.astype(float)
 
-    # 最后 n_frames 帧的时间戳
-    if len(frame_indices) < n_frames:
+    if len(timestamps) < n_frames:
         return None, None
-    last_n_ts = timestamps[-n_frames:]
-    # 插值 BVP
+    if use_first_n:
+        win_ts = timestamps[:n_frames]
+    else:
+        win_ts = timestamps[-n_frames:]
     interp_fn = interp1d(t_bvp, bvp_raw, kind="linear", bounds_error=False, fill_value="extrapolate")
-    bvp_at_frames = interp_fn(last_n_ts).astype(np.float32)
+    bvp_at_frames = interp_fn(win_ts).astype(np.float32)
 
     hr_gt, _, _, _, _ = estimate_hr(
         bvp_at_frames, fs, use_harmonics, use_hr_fft, duration=n_frames / fs
@@ -938,8 +1005,10 @@ def _default_live_output_dir(train_exp_dir):
 
 def main():
     args = parse_args()
+    _main_impl(args)
 
-    # 提前解析 train_exp_dir，供 output_dir 推断 label_ratio
+
+def _main_impl(args):
     if args.train_exp_dir is None and not args.record_only:
         args.train_exp_dir = find_latest_run(0) or find_latest_run_any()
         if args.train_exp_dir and not args.live_ubfc:
@@ -1031,9 +1100,10 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = PhysNet(S, in_ch=in_ch).to(device).eval()
+    # model = EfficientPhysNet(S, in_ch=in_ch).to(device).eval()
     model.load_state_dict(torch.load(weight_path, map_location=device))
 
-    print(f"使用权重: {weight_path}")
+    print(f"使用权重: {os.path.abspath(weight_path)}")
     print(f"采集参数: duration={args.duration}s, fps={args.fps} (训练fs={fs})")
     # 结果输出目录：results/live_runs/label_ratio_X/YYYY-MM-DD_HH-MM-SS
     output_dir = args.output_dir or _default_live_output_dir(args.train_exp_dir)
@@ -1051,23 +1121,31 @@ def main():
             landmark_path = run_openface(args.source, landmarks_dir, openface_dir)
             print("✓ OpenFace 完成: {}".format(landmark_path))
         if landmark_path:
-            print("使用 OpenFace landmarks 裁剪（与训练一致）")
+            print("裁剪 clips (OpenFace landmarks)...")
             frames, ts = load_frames_from_video_with_openface(args.source, landmark_path, store_size=128)
             max_frames = int(args.duration * fs)
             if len(frames) > max_frames:
                 frames = frames[:max_frames]
                 ts = ts[:max_frames]
-            print(f"从视频加载 {len(frames)} 帧 (OpenFace 裁剪)")
+            print(f"  裁剪完成: {len(frames)} 帧")
         else:
             frames, ts = capture_frames(args.source, args.duration, args.fps, args.face, show, None)
-            print(f"从视频加载 {len(frames)} 帧 (Haar 裁剪，无 landmarks)")
+            print(f"  裁剪完成 (Haar): {len(frames)} 帧")
     else:
         frames, ts = capture_frames(args.source, args.duration, args.fps, args.face, show, args.save_video)
-    
+
+    # ── 5s 模式：截断到前120帧 ─────────────────────────────────────
+    if args.five_sec:
+        frames = frames[:120]
+        ts = ts[:120]
+        print(f"  [5s模式] 截断到前120帧 ({120/fs:.1f}s @ {fs}fps)")
+
     print("=" * 60)
-    print("开始处理视频并计算心率...")
-    if frames.shape[0] < fs * 10:
-        raise RuntimeError("采集帧数过少，至少需要约10秒以上的帧数")
+    print("开始 inference...")
+    n_frames = frames.shape[0]
+    min_frames = 120 if args.five_sec else max(int(fs * 5), int(fs * min(args.duration, 8)))  # 5s 最低
+    if n_frames < min_frames:
+        raise RuntimeError(f"采集帧数过少，至少需要 {min_frames} 帧({'5s模式' if args.five_sec else '约8秒以上'})")
 
     # 【检查点 1.3b】帧率一致性
     # 训练: fs=30，H5 中已固定；此处实际 fps 可能 != 30
@@ -1083,45 +1161,33 @@ def main():
     # 注意：live streaming 保持不做重采样（与 process_video_dataset 一致）
     # 如果摄像头帧率不稳定，这是数据质量问题，不是代码问题
 
-    print("  运行模型推理...")
+    print("  推理中...")
     import sys
     sys.stdout.flush()  # 确保输出立即显示
     
     inference_start = time.time()
-    # 【检查点 2.2】max_frames=300 与训练 T=fs*10 一致
-    rppg = run_model(model, frames, max_frames=fs * 10)  # 最多300帧（10秒@30fps）
+    # 视频文件：用完整时长（最多60s）；摄像头/5s模式：120帧
+    if args.five_sec:
+        _max_frames = 120
+    elif not args.source.isdigit() and os.path.isfile(args.source):
+        _max_frames = min(len(frames), int(fs * 60))  # 完整视频，最多60s
+    else:
+        _max_frames = fs * 10  # 摄像头默认10s
+    rppg = run_model(model, frames, max_frames=_max_frames)
     sys.stdout.flush()
     
-    # 可选：生成完整时长的rPPG波形（按10秒窗口拼接）
     rppg_full = None
     rppg_full_filtered = None
     peak_locs_full = None
     if args.full_waveform:
-        # 完整波形：按 10 秒窗口滑动推理，与训练 T=300 一致
-        window_len = fs * 10
-        if len(frames) >= window_len:
-            print("  生成完整波形：按10秒窗口逐段推理（带重叠拼接）...")
-            stride = window_len // 2  # 5秒重叠，提升连续性
-            starts = list(range(0, len(frames) - window_len + 1, stride))
-            last_start = len(frames) - window_len
-            if last_start not in starts:
-                starts.append(last_start)
-
-            rppg_accum = np.zeros(len(frames), dtype=np.float32)
-            rppg_count = np.zeros(len(frames), dtype=np.float32)
-
-            for start in starts:
-                chunk = frames[start:start + window_len]
-                rppg_chunk = run_model(model, chunk, max_frames=window_len)
-                rppg_accum[start:start + window_len] += rppg_chunk
-                rppg_count[start:start + window_len] += 1.0
-
-            rppg_full = rppg_accum / np.maximum(rppg_count, 1e-6)
-            rppg_full_filtered = butter_bandpass(rppg_full, lowcut=0.6, highcut=4, fs=fs)
-            peak_locs_full, _ = adaptive_peak_counting(rppg_full_filtered, fs, hr_ref=None)
-            print(f"  完整波形长度: {len(rppg_full)} 样本 ({len(rppg_full)/fs:.1f}s)")
-        else:
-            print("  ⚠️  帧数不足10秒，无法生成完整波形")
+        # 额外生成完整波形（用于 --save-waveform 保存）
+        full_len = min(len(frames), fs * 60)
+        print(f"  生成完整波形：单窗口推理（{full_len} 帧 / {full_len/fs:.1f}s）...")
+        full_chunk = frames[:full_len]
+        rppg_full = run_model(model, full_chunk, max_frames=full_len)
+        rppg_full_filtered = butter_bandpass(rppg_full, lowcut=0.6, highcut=4, fs=fs)
+        peak_locs_full, _ = adaptive_peak_counting(rppg_full_filtered, fs, hr_ref=None)
+        print(f"  完整波形长度: {len(rppg_full)} 样本 ({len(rppg_full)/fs:.1f}s)")
 
     print("  计算心率...")
     sys.stdout.flush()
@@ -1136,21 +1202,40 @@ def main():
     print(f"  心率计算完成 (耗时 {hr_elapsed:.2f}秒) [基于 {rppg_for_hr_len/fs:.1f}s]")
     sys.stdout.flush()
 
-    # 若视频来自 RPPG_data/subject/v01/，从 BVP.csv 计算 GT HR 并对比
+    # 若视频来自 phyrecorder/RPPG_data 等，从 HR.csv 或 BVP.csv 加载 GT 并对比
     hr_gt = None
+    gt_source = None
     if not args.source.isdigit() and os.path.isfile(args.source):
         n_used = min(len(frames), rppg_for_hr_len)
-        hr_gt, _ = load_gt_hr_from_bvp_csv(args.source, fs, args.harmonics, args.use_hr_fft, n_frames=n_used)
+        use_first = args.five_sec
+        hr_gt = load_gt_hr_from_hr_csv(args.source, n_frames=n_used, use_first_n=use_first)
+        if hr_gt is not None:
+            gt_source = "HR.csv"
+        else:
+            hr_gt, _ = load_gt_hr_from_bvp_csv(
+                args.source, fs, args.harmonics, args.use_hr_fft,
+                n_frames=n_used, use_first_n=use_first)
+            if hr_gt is not None:
+                gt_source = "BVP.csv"
     if hr_gt is not None:
         err_bpm = hr - hr_gt
         print("")
         print("=" * 60)
-        print("【GT 对比】BVP.csv 真值")
+        print(f"【GT 对比】{gt_source} 真值")
         print("=" * 60)
         print(f"  HR (预测): {hr:.2f} BPM")
         print(f"  HR (GT):   {hr_gt:.2f} BPM")
         print(f"  误差:      {err_bpm:+.2f} BPM")
         print("=" * 60)
+
+    # BVP+rPPG 可视化（phyrecorder 目录有 BVP.csv 时）
+    viz_path = None
+    if not args.source.isdigit() and os.path.isfile(args.source) and hr_gt is not None:
+        bvp_aligned = load_bvp_aligned(args.source, n_frames=n_used, use_first_n=use_first)
+        if bvp_aligned is not None:
+            viz_path = os.path.abspath(os.path.join(output_dir, "bvp_rppg_viz.png"))
+            plot_bvp_rppg_viz(bvp_aligned, rppg_for_hr, fs, hr, hr_gt, viz_path)
+            print(f"  可视化: {viz_path}")
 
     # 保存波形（如果指定）到 output_dir
     rppg_raw_plot = rppg_for_hr  # 用于绘图的 raw（60s 或 10s）
@@ -1166,12 +1251,12 @@ def main():
             waveform_data['rppg_full_raw'] = rppg_full
             waveform_data['rppg_full_filtered'] = rppg_full_filtered
             waveform_data['peak_locations_full'] = peak_locs_full
-        waveform_file = os.path.join(output_dir, 'rppg_waveform.npz')
+        waveform_file = os.path.abspath(os.path.join(output_dir, 'rppg_waveform.npz'))
         np.savez(waveform_file, **waveform_data)
         print(f"\n波形已保存到: {waveform_file}")
 
         time_axis = np.arange(len(rppg_filtered)) / fs
-        txt_path = os.path.join(output_dir, 'rppg_waveform.txt')
+        txt_path = os.path.abspath(os.path.join(output_dir, 'rppg_waveform.txt'))
         with open(txt_path, 'w') as f:
             f.write("时间(秒)\trPPG原始\trPPG滤波\n")
             for i in range(len(rppg_filtered)):
@@ -1179,7 +1264,7 @@ def main():
                 f.write(f"{t:.3f}\t{rppg_raw_plot[i]:.6f}\t{rppg_filtered[i]:.6f}\n")
         print(f"波形文本已保存到: {txt_path}")
 
-        png_path = os.path.join(output_dir, 'rppg_waveform.png')
+        png_path = os.path.abspath(os.path.join(output_dir, 'rppg_waveform.png'))
         plot_waveform(time_axis, rppg_raw_plot, rppg_filtered, peak_locs,
                       hr_fft=hr, output_path=png_path)
         print(f"波形图已保存到: {png_path}")
@@ -1200,9 +1285,9 @@ def main():
         f.write("Duration: {:.1f}s, Frames: {}\n".format(len(frames)/fs, len(frames)))
         f.write("HR (FFT): {:.2f} BPM\n".format(hr))
         if hr_gt is not None:
-            f.write("HR (GT from BVP.csv): {:.2f} BPM\n".format(hr_gt))
+            f.write("HR (GT from {}): {:.2f} BPM\n".format(gt_source, hr_gt))
             f.write("Error (Pred - GT): {:.2f} BPM\n".format(hr - hr_gt))
-        f.write("Weight: {}\n".format(weight_path))
+        f.write("Weight: {}\n".format(os.path.abspath(weight_path)))
     print("\n运行摘要已保存到: {}".format(run_summary_path))
     
     # ======================================================================

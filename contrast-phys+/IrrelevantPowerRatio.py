@@ -7,8 +7,7 @@ import torch.fft
 
 
 class IrrelevantPowerRatio(nn.Module):
-    # we reuse the code in Gideon2021 to get irrelevant power ratio
-    # Gideon, John, and Simon Stent. "The way to my heart is through contrastive learning: Remote photoplethysmography from unlabelled video." Proceedings of the IEEE/CVF international conference on computer vision. 2021.
+    # Gideon2021: ratio of power outside physiological band (40-250 BPM)
     def __init__(self, Fs, high_pass, low_pass):
         super(IrrelevantPowerRatio, self).__init__()
         self.Fs = Fs
@@ -16,10 +15,7 @@ class IrrelevantPowerRatio(nn.Module):
         self.low_pass = low_pass
 
     def forward(self, preds):
-        # Get PSD
         X_real = torch.view_as_real(torch.fft.rfft(preds, dim=-1, norm='forward'))
-
-        # Determine ratio of energy between relevant and non-relevant regions
         Fn = self.Fs / 2
         freqs = torch.linspace(0, Fn, X_real.shape[-2])
         use_freqs = torch.logical_and(freqs >= self.high_pass / 60, freqs <= self.low_pass / 60)
