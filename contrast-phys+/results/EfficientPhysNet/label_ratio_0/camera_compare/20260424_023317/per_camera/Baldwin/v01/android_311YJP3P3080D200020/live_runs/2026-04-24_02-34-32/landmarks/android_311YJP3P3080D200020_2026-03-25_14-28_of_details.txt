@@ -1,0 +1,10 @@
+Input:/home/vt_ai_test1/KarenHE/contrast-phys/RPPG_data_benny_eric/Recorded_3 Cameras/Baldwin/v01/android_311YJP3P3080D200020_2026-03-25_14-28.avi
+Input full path:/home/vt_ai_test1/KarenHE/contrast-phys/RPPG_data_benny_eric/Recorded_3 Cameras/Baldwin/v01/android_311YJP3P3080D200020_2026-03-25_14-28.avi
+Camera parameters:520.833,520.833,240,320
+Output csv:android_311YJP3P3080D200020_2026-03-25_14-28.csv
+Gaze: 0
+AUs: 0
+Landmarks 2D: 1
+Landmarks 3D: 0
+Pose: 0
+Shape parameters: 0

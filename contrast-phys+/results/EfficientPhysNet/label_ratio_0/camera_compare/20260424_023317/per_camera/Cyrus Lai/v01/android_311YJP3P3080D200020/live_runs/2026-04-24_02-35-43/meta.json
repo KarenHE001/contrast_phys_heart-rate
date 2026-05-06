@@ -1,0 +1,17 @@
+{
+  "video": "/home/vt_ai_test1/KarenHE/contrast-phys/RPPG_data_benny_eric/Recorded_3 Cameras/Cyrus Lai/v01/android_311YJP3P3080D200020_2026-03-25_15-03.avi",
+  "session_dir": "/home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/gt_proxy/Cyrus Lai/v01/android_311YJP3P3080D200020",
+  "landmarks": "/home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/per_camera/Cyrus Lai/v01/android_311YJP3P3080D200020/live_runs/2026-04-24_02-35-43/landmarks/android_311YJP3P3080D200020_2026-03-25_15-03.csv",
+  "pretrained_dir": "/home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/pretrained/EfficientPhysNet/curriculum",
+  "weight": "/home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/pretrained/EfficientPhysNet/curriculum/best_model.pt",
+  "strategy": "curriculum",
+  "input_size": 96,
+  "fs": 30,
+  "scales_sec": [
+    10
+  ],
+  "device": "cuda",
+  "n_frames_loaded": 1753,
+  "has_gt": true,
+  "gt_note": "BVP.csv + frames_timestamp.csv in session_dir; HR/PSD 与 EfficientPhysNet/evaluate.py 一致"
+}

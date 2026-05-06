@@ -1,0 +1,17 @@
+{
+  "video": "/home/vt_ai_test1/KarenHE/contrast-phys/RPPG_data_benny_eric/Recorded_3 Cameras/Patrick Wong/v01/video_RAW_YUV420.avi",
+  "session_dir": "/home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/gt_proxy/Patrick Wong/v01/video_RAW_YUV420",
+  "landmarks": "/home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/per_camera/Patrick Wong/v01/video_RAW_YUV420/live_runs/2026-04-24_02-39-45/landmarks/video_RAW_YUV420.csv",
+  "pretrained_dir": "/home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/pretrained/EfficientPhysNet/curriculum",
+  "weight": "/home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/pretrained/EfficientPhysNet/curriculum/best_model.pt",
+  "strategy": "curriculum",
+  "input_size": 96,
+  "fs": 30,
+  "scales_sec": [
+    10
+  ],
+  "device": "cuda",
+  "n_frames_loaded": 1801,
+  "has_gt": true,
+  "gt_note": "BVP.csv + frames_timestamp.csv in session_dir; HR/PSD 与 EfficientPhysNet/evaluate.py 一致"
+}

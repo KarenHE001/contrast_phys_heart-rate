@@ -1,0 +1,55 @@
+$ /home/vt_ai_test1/mamba-envs/ml/bin/python /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/EfficientPhysNet/evaluation/evaluate.py /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/per_camera/Audrey/v01/android_311YJP3P3080D200020/live_runs/2026-04-24_02-33-54/eval_bundle_t10s
+
+[stdout]
+====================================================================
+评估: Layer 1 波形质量 + Layer 2 心率结果
+====================================================================
+pred_dir: /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/per_camera/Audrey/v01/android_311YJP3P3080D200020/live_runs/2026-04-24_02-33-54/eval_bundle_t10s
+meta: input_size=96 | inference_time=nans | clips=5
+Layer 1 PSD: 启用 | HR 用于 Capture-SNR: 是
+Layer 2 HR 指标: 启用
+诊断: Random 10s 子窗 | WaveCorr / ACF
+====================================================================
+
+session:
+--------------------------------------------------------
+  Clip 1  [ 10s]: PSD_corr=0.6007, PSD_MSE=0.0021 | HR_pred=88.8, HR_gt=89.6, err=0.8 BPM | WaveLagCorr=0.432 | CapSNR=-3.24dB | IPR=0.7300 | HR_half_std=18.47
+  Clip 2  [ 10s]: PSD_corr=0.4549, PSD_MSE=0.0046 | HR_pred=95.8, HR_gt=89.9, err=5.9 BPM | WaveLagCorr=0.390 | CapSNR=-6.21dB | IPR=0.7566 | HR_half_std=20.75
+  Clip 3  [ 10s]: PSD_corr=0.9160, PSD_MSE=0.0023 | HR_pred=89.3, HR_gt=90.4, err=1.1 BPM | WaveLagCorr=0.464 | CapSNR=-0.17dB | IPR=0.7373 | HR_half_std=1.31
+  Clip 4  [ 10s]: PSD_corr=0.4534, PSD_MSE=0.0110 | HR_pred=91.2, HR_gt=91.2, err=0.0 BPM | WaveLagCorr=0.441 | CapSNR=-2.86dB | IPR=0.8730 | HR_half_std=25.33
+  Clip 5  [ 10s]: PSD_corr=-0.0921, PSD_MSE=0.0146 | HR_pred=57.3, HR_gt=91.6, err=34.2 BPM | WaveLagCorr=0.192 | CapSNR=-14.03dB | IPR=0.8372 | HR_half_std=28.15
+  Clip 1a [ 10s]: PSD_corr=0.6007, PSD_MSE=0.0021 | HR_pred=88.8, HR_gt=89.6, err=0.8 BPM  ── seed=1885600476 start=0.0s
+  Clip 2a [ 10s]: PSD_corr=0.4549, PSD_MSE=0.0046 | HR_pred=95.8, HR_gt=89.9, err=5.9 BPM  ── seed=1471173232 start=0.0s
+  Clip 3a [ 10s]: PSD_corr=0.9160, PSD_MSE=0.0023 | HR_pred=89.3, HR_gt=90.4, err=1.1 BPM  ── seed=1868045822 start=0.0s
+  Clip 4a [ 10s]: PSD_corr=0.4534, PSD_MSE=0.0110 | HR_pred=91.2, HR_gt=91.2, err=0.0 BPM  ── seed=1724407628 start=0.0s
+  Clip 5a [ 10s]: PSD_corr=-0.0921, PSD_MSE=0.0146 | HR_pred=57.3, HR_gt=91.6, err=34.2 BPM  ── seed=1808394428 start=0.0s
+
+====================================================================
+Layer 1 波形质量（rPPG vs GT 规律 / 频谱 / 稳定性）
+====================================================================
+  PSD Pearson: 0.4666 ± 0.3263  (n=5)
+  PSD MSE:     0.006915 ± 0.005004
+  Capture-SNR: -5.30 ± 4.77 dB  (GT HR 频点及谐波附近能量)
+  IPR:         0.7868 ± 0.0575  (40–250 BPM 外能量占比，越低越好)
+  WaveCorr@0=-0.0711 | WaveCorr@lag=0.3837 | ACF=0.4908
+  HR_half_std: 18.80 ± 9.38 BPM  (同 clip 两半段 HR 离散度)
+
+====================================================================
+Layer 2 心率结果（设备侧）
+====================================================================
+  n=5
+  MAE=8.42 BPM, RMSE=15.54 BPM, P5=60.0%, P10=80.0%
+  Pearson(HR)=-0.6830
+
+====================================================================
+诊断：Random 10s 子窗口
+====================================================================
+  PSD Pearson=0.4666 ± 0.3263, PSD MSE=0.006915 ± 0.005004, n=5
+  MAE=8.42 BPM, RMSE=15.54 BPM, P5=60.0%, P10=80.0%, n=5
+
+每个 Subject (Layer 1 + 2):
+  session: PSD=0.4666 MSE=0.006915 | CapSNR=-5.30dB | IPR=0.7868 | WLag=0.384 ACF=0.491 | HR_½std=18.80 | MAE=8.42BPM
+
+评估结果已保存到: /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/per_camera/Audrey/v01/android_311YJP3P3080D200020/live_runs/2026-04-24_02-33-54/eval_bundle_t10s/eval
+  - summary.txt
+✓ 评估完成

@@ -1,0 +1,3 @@
+camera_key,n_common_clips,n_sessions,mean_common_mae_bpm,rmse_common_bpm,clip_wins,session_wins
+video_RAW_YUV420,75,15,7.558815125469614,15.586797093153258,56,13
+android_311YJP3P3080D200020,75,15,16.59989870249555,24.44266753521815,19,2

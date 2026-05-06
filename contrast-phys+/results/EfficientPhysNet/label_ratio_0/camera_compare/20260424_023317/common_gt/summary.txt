@@ -1,0 +1,13 @@
+Common-GT aligned comparison
+============================================================
+alignment: per-camera relative start -> shared GT anchor
+run_root: /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317
+aligned clips: 75
+aligned sessions: 15
+issues: 1
+
+  video_RAW_YUV420: clips=75, sessions=15, MAE=7.56, RMSE=15.59, clip_wins=56, session_wins=13
+  android_311YJP3P3080D200020: clips=75, sessions=15, MAE=16.60, RMSE=24.44, clip_wins=19, session_wins=2
+
+Issues
+  skip Valetta/v01: incomplete camera set

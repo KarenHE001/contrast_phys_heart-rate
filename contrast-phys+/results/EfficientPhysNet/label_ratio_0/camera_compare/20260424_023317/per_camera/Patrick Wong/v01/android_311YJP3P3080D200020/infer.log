@@ -1,0 +1,33 @@
+$ /home/vt_ai_test1/mamba-envs/ml/bin/python /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/EfficientPhysNet/live_recorded_infer.py --video /home/vt_ai_test1/KarenHE/contrast-phys/RPPG_data_benny_eric/Recorded_3 Cameras/Patrick Wong/v01/android_311YJP3P3080D200020_2026-03-25_14-50.avi --session-dir /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/gt_proxy/Patrick Wong/v01/android_311YJP3P3080D200020 --strategy curriculum --scales 10 --label-ratio 0.0 --output-root /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/per_camera/Patrick Wong/v01/android_311YJP3P3080D200020 --openface-dir /home/vt_ai_test1/KarenHE/contrast-phys/OpenFace/build_openface_env
+
+[stdout]
+  [GT-align] clock offset 236.5s detected, shifted to BVP domain
+运行 OpenFace: /home/vt_ai_test1/KarenHE/contrast-phys/OpenFace/build_openface_env/bin/FeatureExtraction -f /home/vt_ai_test1/KarenHE/contrast-phys/RPPG_data_benny_eric/Recorded_3 Cameras/Patrick Wong/v01/android_311YJP3P3080D200020_2026-03-25_14-50.avi -out_dir /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/per_camera/Patrick Wong/v01/android_311YJP3P3080D200020/live_runs/2026-04-24_02-39-27/landmarks -2Dfp
+OpenFace -> /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/per_camera/Patrick Wong/v01/android_311YJP3P3080D200020/live_runs/2026-04-24_02-39-27/landmarks/android_311YJP3P3080D200020_2026-03-25_14-50.csv
+加载帧: 1755 @ store_size=96, fs(config)=30, GT=yes
+  [t10s] clips=5
+  已写 evaluate 包: /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/per_camera/Patrick Wong/v01/android_311YJP3P3080D200020/live_runs/2026-04-24_02-39-27/eval_bundle_t10s/session.npy + meta.json
+
+Live recorded inference + eval (UBFC-aligned metrics when GT present)
+============================================================
+video: /home/vt_ai_test1/KarenHE/contrast-phys/RPPG_data_benny_eric/Recorded_3 Cameras/Patrick Wong/v01/android_311YJP3P3080D200020_2026-03-25_14-50.avi
+session_dir: /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/gt_proxy/Patrick Wong/v01/android_311YJP3P3080D200020
+strategy: curriculum | input_size: 96 | fs: 30
+GT: BVP.csv + frames_timestamp.csv
+
+【主】t10s: n_clips=5, MAE=5.18 BPM, RMSE=9.44 BPM
+  clip 1: pred=77.7 BPM gt=77.6 err=0.2 PSD_corr=0.2253
+  clip 2: pred=79.5 BPM gt=78.5 err=1.0 PSD_corr=-0.0146
+  clip 3: pred=77.5 BPM gt=75.7 err=1.8 PSD_corr=0.2740
+  clip 4: pred=57.8 BPM gt=78.7 err=20.9 PSD_corr=-0.1662
+  clip 5: pred=82.8 BPM gt=80.8 err=2.0 PSD_corr=-0.0663
+
+JSON: inference_by_scale.json, eval_vs_gt.json
+evaluate 复核: cd contrast-phys+ && python EfficientPhysNet/evaluation/evaluate.py <run_dir>/eval_bundle_t10s
+
+保存目录: /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/per_camera/Patrick Wong/v01/android_311YJP3P3080D200020/live_runs/2026-04-24_02-39-27
+
+
+[stderr]
+/home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/EfficientPhysNet/live_recorded_infer.py:331: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  model.load_state_dict(torch.load(weight_path, map_location=device))

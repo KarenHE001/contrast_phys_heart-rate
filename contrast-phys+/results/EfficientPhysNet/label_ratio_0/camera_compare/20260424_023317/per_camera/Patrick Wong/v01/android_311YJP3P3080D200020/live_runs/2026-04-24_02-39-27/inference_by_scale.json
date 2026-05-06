@@ -1,0 +1,88 @@
+{
+  "t10s": {
+    "time_interval_sec": 10,
+    "n_clips": 5,
+    "clips": [
+      {
+        "clip_idx": 1,
+        "t_start_s": 0,
+        "t_end_s": 10,
+        "hr_pred_bpm": 77.73129403661156,
+        "n_frames": 300,
+        "frame_num_start": 0,
+        "frame_num_end": 299,
+        "hr_gt_bpm": 77.56903224498495,
+        "hr_err_bpm": 0.16226179162660515,
+        "psd_corr": 0.22527809805559434,
+        "psd_mse": 0.017152973419642656,
+        "time_start_wall": 1774421202.6776206,
+        "time_end_wall": 1774421212.7406206,
+        "time_span_wall_s": 10.062999963760376
+      },
+      {
+        "clip_idx": 2,
+        "t_start_s": 10,
+        "t_end_s": 20,
+        "hr_pred_bpm": 79.52261140954408,
+        "n_frames": 300,
+        "frame_num_start": 300,
+        "frame_num_end": 599,
+        "hr_gt_bpm": 78.5183543043233,
+        "hr_err_bpm": 1.0042571052207876,
+        "psd_corr": -0.014600497554651202,
+        "psd_mse": 0.017222139907759185,
+        "time_start_wall": 1774421212.7406206,
+        "time_end_wall": 1774421223.0056205,
+        "time_span_wall_s": 10.264999866485596
+      },
+      {
+        "clip_idx": 3,
+        "t_start_s": 20,
+        "t_end_s": 30,
+        "hr_pred_bpm": 77.50154180320497,
+        "n_frames": 300,
+        "frame_num_start": 600,
+        "frame_num_end": 899,
+        "hr_gt_bpm": 75.65965141440505,
+        "hr_err_bpm": 1.841890388799925,
+        "psd_corr": 0.2740460728203858,
+        "psd_mse": 0.008200911865687912,
+        "time_start_wall": 1774421223.0076206,
+        "time_end_wall": 1774421233.2706206,
+        "time_span_wall_s": 10.263000011444092
+      },
+      {
+        "clip_idx": 4,
+        "t_start_s": 30,
+        "t_end_s": 40,
+        "hr_pred_bpm": 57.797918847438936,
+        "n_frames": 300,
+        "frame_num_start": 900,
+        "frame_num_end": 1199,
+        "hr_gt_bpm": 78.71238981436153,
+        "hr_err_bpm": 20.914470966922593,
+        "psd_corr": -0.1662305213906349,
+        "psd_mse": 0.01544163103418115,
+        "time_start_wall": 1774421233.2686207,
+        "time_end_wall": 1774421243.4996207,
+        "time_span_wall_s": 10.230999946594238
+      },
+      {
+        "clip_idx": 5,
+        "t_start_s": 40,
+        "t_end_s": 50,
+        "hr_pred_bpm": 82.81227186290742,
+        "n_frames": 300,
+        "frame_num_start": 1200,
+        "frame_num_end": 1499,
+        "hr_gt_bpm": 80.81208278032376,
+        "hr_err_bpm": 2.0001890825836597,
+        "psd_corr": -0.06629606823997702,
+        "psd_mse": 0.0068730088024658575,
+        "time_start_wall": 1774421243.4996207,
+        "time_end_wall": 1774421253.7956207,
+        "time_span_wall_s": 10.296000003814697
+      }
+    ]
+  }
+}

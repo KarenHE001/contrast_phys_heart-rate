@@ -1,0 +1,14 @@
+{
+  "strategy": "curriculum",
+  "time_interval_sec": 10,
+  "fs": 30,
+  "input_size": 96,
+  "label_ratio": 0.0,
+  "run_id": 0,
+  "weight_path": "/home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/pretrained/EfficientPhysNet/curriculum/best_model.pt",
+  "device": "cuda",
+  "subjects_saved": 1,
+  "clips_total": 6,
+  "source": "live_recorded_infer",
+  "created_at": "2026-04-24 02:35:41"
+}

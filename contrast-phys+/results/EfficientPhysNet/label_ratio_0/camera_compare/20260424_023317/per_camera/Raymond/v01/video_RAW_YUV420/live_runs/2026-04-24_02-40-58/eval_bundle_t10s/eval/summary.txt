@@ -1,0 +1,28 @@
+Evaluation Summary
+============================================================
+pred_dir: /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/per_camera/Raymond/v01/video_RAW_YUV420/live_runs/2026-04-24_02-40-58/eval_bundle_t10s
+meta: input_size=96, inference_time=nans, clips_total=6, device=cuda
+
+Layer 1 waveform quality (signal-level)
+  PSD: corr 0.2022±0.1917, mse 0.016750±0.004870, n=6
+  Capture-SNR: 0.86±2.11 dB
+  IPR: 0.7902±0.0134
+  Wave: corr0 0.2353, corr_lag 0.3910, acf 0.2994
+  HR_half_std: 14.84±7.70 BPM
+
+Layer 2 heart rate (device-level)
+  MAE 0.96 BPM, RMSE 1.08 BPM, P5 100.0%, P10 100.0%, Pearson 0.4204, n=6
+Diagnostics: Random10s windows — see console
+
+------------------------------------------------------------
+Per-subject:
+  session: PSD_corr=0.2022 PSD_MSE=0.016750 | CapSNR=0.86dB IPR=0.7902 | WaveLag=0.391 ACF=0.299 HR_½std=14.84 | MAE=0.96BPM
+
+------------------------------------------------------------
+Per-clip HR (subject | clip | HR_pred | HR_gt | err BPM):
+  session clip 1: pred=77.2 gt=78.4 err=1.2
+  session clip 2: pred=77.4 gt=76.6 err=0.7
+  session clip 3: pred=77.1 gt=78.2 err=1.1
+  session clip 4: pred=75.1 gt=76.9 err=1.8
+  session clip 5: pred=77.6 gt=77.0 err=0.6
+  session clip 6: pred=78.6 gt=78.3 err=0.4

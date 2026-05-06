@@ -1,0 +1,16 @@
+Live recorded inference + eval (UBFC-aligned metrics when GT present)
+============================================================
+video: /home/vt_ai_test1/KarenHE/contrast-phys/RPPG_data_benny_eric/Recorded_3 Cameras/Raymond/v01/android_311YJP3P3080D200020_2026-03-25_14-46.avi
+session_dir: /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/gt_proxy/Raymond/v01/android_311YJP3P3080D200020
+strategy: curriculum | input_size: 96 | fs: 30
+GT: BVP.csv + frames_timestamp.csv
+
+【主】t10s: n_clips=5, MAE=15.85 BPM, RMSE=19.11 BPM
+  clip 1: pred=52.6 BPM gt=79.2 err=26.6 PSD_corr=0.1809
+  clip 2: pred=50.4 BPM gt=77.9 err=27.5 PSD_corr=0.0485
+  clip 3: pred=59.7 BPM gt=78.2 err=18.4 PSD_corr=0.3741
+  clip 4: pred=81.1 BPM gt=78.4 err=2.7 PSD_corr=0.4720
+  clip 5: pred=82.6 BPM gt=78.5 err=4.1 PSD_corr=0.3535
+
+JSON: inference_by_scale.json, eval_vs_gt.json
+evaluate 复核: cd contrast-phys+ && python EfficientPhysNet/evaluation/evaluate.py <run_dir>/eval_bundle_t10s

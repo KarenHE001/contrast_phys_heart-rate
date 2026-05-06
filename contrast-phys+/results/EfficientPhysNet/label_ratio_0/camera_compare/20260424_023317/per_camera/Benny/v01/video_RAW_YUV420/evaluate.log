@@ -1,0 +1,57 @@
+$ /home/vt_ai_test1/mamba-envs/ml/bin/python /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/EfficientPhysNet/evaluation/evaluate.py /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/per_camera/Benny/v01/video_RAW_YUV420/live_runs/2026-04-24_02-35-22/eval_bundle_t10s
+
+[stdout]
+====================================================================
+评估: Layer 1 波形质量 + Layer 2 心率结果
+====================================================================
+pred_dir: /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/per_camera/Benny/v01/video_RAW_YUV420/live_runs/2026-04-24_02-35-22/eval_bundle_t10s
+meta: input_size=96 | inference_time=nans | clips=6
+Layer 1 PSD: 启用 | HR 用于 Capture-SNR: 是
+Layer 2 HR 指标: 启用
+诊断: Random 10s 子窗 | WaveCorr / ACF
+====================================================================
+
+session:
+--------------------------------------------------------
+  Clip 1  [ 10s]: PSD_corr=0.4437, PSD_MSE=0.0103 | HR_pred=77.8, HR_gt=76.3, err=1.4 BPM | WaveLagCorr=0.337 | CapSNR=-3.67dB | IPR=0.8408 | HR_half_std=18.76
+  Clip 2  [ 10s]: PSD_corr=0.0047, PSD_MSE=0.0146 | HR_pred=65.6, HR_gt=77.8, err=12.2 BPM | WaveLagCorr=0.314 | CapSNR=-6.38dB | IPR=0.8891 | HR_half_std=3.09
+  Clip 3  [ 10s]: PSD_corr=0.2735, PSD_MSE=0.0076 | HR_pred=46.8, HR_gt=73.3, err=26.5 BPM | WaveLagCorr=0.186 | CapSNR=-6.25dB | IPR=0.8713 | HR_half_std=0.20
+  Clip 4  [ 10s]: PSD_corr=0.4693, PSD_MSE=0.0066 | HR_pred=75.6, HR_gt=76.2, err=0.6 BPM | WaveLagCorr=0.559 | CapSNR=0.97dB | IPR=0.8872 | HR_half_std=13.91
+  Clip 5  [ 10s]: PSD_corr=0.1071, PSD_MSE=0.0060 | HR_pred=82.4, HR_gt=82.9, err=0.4 BPM | WaveLagCorr=0.426 | CapSNR=-0.14dB | IPR=0.8882 | HR_half_std=11.59
+  Clip 6  [ 10s]: PSD_corr=-0.0727, PSD_MSE=0.0172 | HR_pred=77.5, HR_gt=78.3, err=0.8 BPM | WaveLagCorr=0.363 | CapSNR=-4.72dB | IPR=0.8834 | HR_half_std=3.40
+  Clip 1a [ 10s]: PSD_corr=0.4437, PSD_MSE=0.0103 | HR_pred=77.8, HR_gt=76.3, err=1.4 BPM  ── seed=864858959 start=0.0s
+  Clip 2a [ 10s]: PSD_corr=0.0047, PSD_MSE=0.0146 | HR_pred=65.6, HR_gt=77.8, err=12.2 BPM  ── seed=304189995 start=0.0s
+  Clip 3a [ 10s]: PSD_corr=0.2735, PSD_MSE=0.0076 | HR_pred=46.8, HR_gt=73.3, err=26.5 BPM  ── seed=1812884316 start=0.0s
+  Clip 4a [ 10s]: PSD_corr=0.4693, PSD_MSE=0.0066 | HR_pred=75.6, HR_gt=76.2, err=0.6 BPM  ── seed=600877107 start=0.0s
+  Clip 5a [ 10s]: PSD_corr=0.1071, PSD_MSE=0.0060 | HR_pred=82.4, HR_gt=82.9, err=0.4 BPM  ── seed=723476412 start=0.0s
+  Clip 6a [ 10s]: PSD_corr=-0.0727, PSD_MSE=0.0172 | HR_pred=77.5, HR_gt=78.3, err=0.8 BPM  ── seed=1584062877 start=0.0s
+
+====================================================================
+Layer 1 波形质量（rPPG vs GT 规律 / 频谱 / 稳定性）
+====================================================================
+  PSD Pearson: 0.2043 ± 0.2075  (n=6)
+  PSD MSE:     0.010380 ± 0.004207
+  Capture-SNR: -3.36 ± 2.84 dB  (GT HR 频点及谐波附近能量)
+  IPR:         0.8767 ± 0.0171  (40–250 BPM 外能量占比，越低越好)
+  WaveCorr@0=0.0387 | WaveCorr@lag=0.3641 | ACF=0.2649
+  HR_half_std: 8.49 ± 6.69 BPM  (同 clip 两半段 HR 离散度)
+
+====================================================================
+Layer 2 心率结果（设备侧）
+====================================================================
+  n=6
+  MAE=6.99 BPM, RMSE=11.94 BPM, P5=66.7%, P10=66.7%
+  Pearson(HR)=0.7386
+
+====================================================================
+诊断：Random 10s 子窗口
+====================================================================
+  PSD Pearson=0.2043 ± 0.2075, PSD MSE=0.010380 ± 0.004207, n=6
+  MAE=6.99 BPM, RMSE=11.94 BPM, P5=66.7%, P10=66.7%, n=6
+
+每个 Subject (Layer 1 + 2):
+  session: PSD=0.2043 MSE=0.010380 | CapSNR=-3.36dB | IPR=0.8767 | WLag=0.364 ACF=0.265 | HR_½std=8.49 | MAE=6.99BPM
+
+评估结果已保存到: /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/per_camera/Benny/v01/video_RAW_YUV420/live_runs/2026-04-24_02-35-22/eval_bundle_t10s/eval
+  - summary.txt
+✓ 评估完成
