@@ -1,0 +1,19 @@
+{
+  "created_at": "2026-04-02 08:22:57",
+  "data_root": "/home/vt_ai_test1/KarenHE/contrast-phys/RPPG_data_benny_eric/Recorded_3 Cameras",
+  "results_root": "/home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/EfficientPhysNet/results/EfficientPhysNet/label_ratio_0/camera_compare/20260402_082257",
+  "python_bin": "/home/vt_ai_test1/mamba-envs/ml/bin/python",
+  "strategy": "curriculum",
+  "scale_sec": 10,
+  "label_ratio": 0.0,
+  "camera_order": [
+    "video_RAW_YUV420",
+    "android_311YJP3P3080D200020",
+    "android_RFCN3050F7T"
+  ],
+  "jobs_total": 3,
+  "jobs_ok": 3,
+  "jobs_error": 0,
+  "paired_sessions": 1,
+  "dry_run": true
+}

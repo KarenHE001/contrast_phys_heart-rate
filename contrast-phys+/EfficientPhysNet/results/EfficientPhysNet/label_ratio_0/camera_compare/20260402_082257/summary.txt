@@ -1,0 +1,18 @@
+Recorded 3-camera benchmark
+============================================================
+data_root: /home/vt_ai_test1/KarenHE/contrast-phys/RPPG_data_benny_eric/Recorded_3 Cameras
+run_root: /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/EfficientPhysNet/results/EfficientPhysNet/label_ratio_0/camera_compare/20260402_082257
+python: /home/vt_ai_test1/mamba-envs/ml/bin/python
+strategy: curriculum | scale: 10s
+jobs: total=3, ok=3, error=0
+paired complete sessions: 1
+
+Per-camera summary
+  video_RAW_YUV420: n=1, MAE=N/A, RMSE=N/A, PSD=N/A, Pearson=N/A
+  android_311YJP3P3080D200020: n=1, MAE=N/A, RMSE=N/A, PSD=N/A, Pearson=N/A
+  android_RFCN3050F7T: n=1, MAE=N/A, RMSE=N/A, PSD=N/A, Pearson=N/A
+
+Wins by paired-session MAE
+  video_RAW_YUV420: 0
+  android_311YJP3P3080D200020: 0
+  android_RFCN3050F7T: 0

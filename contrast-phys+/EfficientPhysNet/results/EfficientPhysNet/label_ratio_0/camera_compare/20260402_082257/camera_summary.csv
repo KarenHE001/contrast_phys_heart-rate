@@ -1,0 +1,4 @@
+camera_key,n_sessions,mean_mae_bpm,std_mae_bpm,mean_rmse_bpm,mean_psd_corr,mean_pearson_hr,mean_n_clips
+video_RAW_YUV420,1,,,,,,
+android_311YJP3P3080D200020,1,,,,,,
+android_RFCN3050F7T,1,,,,,,
