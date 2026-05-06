@@ -1,0 +1,3 @@
+Pred dir: pretrained/EfficientPhysNet/loss_prop/pred/1
+PSD: corr 0.8417±0.2353, MSE 0.000484±0.000498
+HR: MAE 3.83 BPM, RMSE 12.85 BPM, P5 91.7%, P10 91.7%

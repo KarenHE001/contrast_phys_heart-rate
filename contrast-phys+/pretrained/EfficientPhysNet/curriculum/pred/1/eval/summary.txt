@@ -1,0 +1,6 @@
+Evaluation Summary
+==================================================
+Pred dir: pretrained/EfficientPhysNet/curriculum/pred/1
+【方式1】PSD: corr 0.8821±0.1189, MSE 0.002132±0.001771
+【方式2】HR: MAE 2.17 BPM, RMSE 8.30 BPM, P5 94.7%, P10 94.7%
+【方式3】Random 10s: MAE 2.17 BPM, RMSE 8.30 BPM, n=38
