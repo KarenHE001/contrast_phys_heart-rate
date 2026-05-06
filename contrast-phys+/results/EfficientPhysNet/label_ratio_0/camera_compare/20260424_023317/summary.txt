@@ -1,0 +1,24 @@
+Recorded 3-camera benchmark
+============================================================
+data_root: /home/vt_ai_test1/KarenHE/contrast-phys/RPPG_data_benny_eric/Recorded_3 Cameras
+run_root: /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317
+python: /home/vt_ai_test1/mamba-envs/ml/bin/python
+strategy: curriculum | scale: 10s
+jobs: total=31, ok=31, error=0
+paired complete sessions: 15
+
+Common-GT aligned summary (primary)
+  video_RAW_YUV420: clips=75, sessions=15, MAE=7.56, RMSE=15.59, clip_wins=56, session_wins=13
+  android_311YJP3P3080D200020: clips=75, sessions=15, MAE=16.60, RMSE=24.44, clip_wins=19, session_wins=2
+  outputs: /home/vt_ai_test1/KarenHE/contrast-phys/contrast-phys+/results/EfficientPhysNet/label_ratio_0/camera_compare/20260424_023317/common_gt
+
+Common-GT issues
+  skip Valetta/v01: incomplete camera set
+
+Legacy per-camera summary (camera-native timestamps)
+  video_RAW_YUV420: n=16, MAE=7.53+-10.66, RMSE=10.00, PSD=0.2954, Pearson=0.2786
+  android_311YJP3P3080D200020: n=15, MAE=14.87+-6.60, RMSE=20.06, PSD=0.2431, Pearson=-0.0601
+
+Wins by paired-session MAE 
+  video_RAW_YUV420: 11
+  android_311YJP3P3080D200020: 4

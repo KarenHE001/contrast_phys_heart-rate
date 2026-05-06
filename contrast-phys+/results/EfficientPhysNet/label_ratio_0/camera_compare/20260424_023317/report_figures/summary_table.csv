@@ -1,0 +1,9 @@
+Metric,C920,Android_311,Ratio
+Overall MAE (BPM),7.54,14.87,2.0x
+Cleaned MAE (BPM),3.11,13.01,4.2x
+rPPG SNR at GT freq (dB),-1.6,-6.1,-
+BP Correlation (rPPG vs BVP),0.163,-0.054,-
+PSD Peak Match Rate (%),66,36,-
+Frame Jitter CV (%),14.8,31.2,2.1x
+Avg FF Noise (%),0.2990,0.4364,1.5x
+Brightness Drift (60s),3.4,11.2,3.3x
